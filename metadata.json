@@ -1,0 +1,5 @@
+{
+  "name": "PlayRoom CRM Copy for Deploy",
+  "description": "CRM система для управления детской игровой комнатой. Учет посещений, финансов, товаров и дней рождения.",
+  "requestFramePermissions": []
+}
