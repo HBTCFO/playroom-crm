@@ -21,6 +21,7 @@ interface OwnerTabProps {
   miniGameSettings: MiniGameSettings;
   feedbacks: Feedback[];
   adminTasks: AdminTask[];
+  staffPassword: string;
   onUpdateTariffs: (tariffs: Tariff[]) => void;
   onUpdateProducts: (products: Product[]) => void;
   onUpdateCategories: (categories: Category[]) => void;
@@ -38,11 +39,12 @@ interface OwnerTabProps {
   onResolveFeedback: (id: string) => void;
   onAddTask: (desc: string) => void;
   onDeleteTask: (id: string) => void;
+  onUpdateStaffPassword: (password: string) => Promise<void>;
 }
 
 const OwnerTab: React.FC<OwnerTabProps> = ({ 
-    events, days, tariffs, products, categories, discounts, extensionRate, birthdayRates, staffAnimators, partners, administrators, bonusPercentage, documents, miniGameSettings, feedbacks, adminTasks,
-    onUpdateTariffs, onUpdateProducts, onUpdateCategories, onUpdateDiscounts, onUpdateExtensionRate, onUpdateEvents, onUpdateBirthdayRates, onUpdateStaffAnimators, onUpdatePartners, onUpdateAdministrators, onUpdateBonusPercentage, onReopenShift, onUpdateDocuments, onUpdateMiniGames, onResolveFeedback, onAddTask, onDeleteTask
+    events, days, tariffs, products, categories, discounts, extensionRate, birthdayRates, staffAnimators, partners, administrators, bonusPercentage, documents, miniGameSettings, feedbacks, adminTasks, staffPassword,
+    onUpdateTariffs, onUpdateProducts, onUpdateCategories, onUpdateDiscounts, onUpdateExtensionRate, onUpdateEvents, onUpdateBirthdayRates, onUpdateStaffAnimators, onUpdatePartners, onUpdateAdministrators, onUpdateBonusPercentage, onReopenShift, onUpdateDocuments, onUpdateMiniGames, onResolveFeedback, onAddTask, onDeleteTask, onUpdateStaffPassword
 }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
@@ -89,6 +91,10 @@ const OwnerTab: React.FC<OwnerTabProps> = ({
   
   // Memo File Input Ref
   const memoFileInputRef = useRef<HTMLInputElement>(null);
+
+  const [newStaffPassword, setNewStaffPassword] = useState('');
+  const [confirmStaffPassword, setConfirmStaffPassword] = useState('');
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -306,6 +312,27 @@ const OwnerTab: React.FC<OwnerTabProps> = ({
       onUpdateMiniGames(localMiniGames);
       alert('Настройки мини-игр обновлены!');
   };
+
+  const handleStaffPasswordSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!newStaffPassword || !confirmStaffPassword) {
+          setPasswordMessage('Заполните оба поля');
+          return;
+      }
+      if (newStaffPassword !== confirmStaffPassword) {
+          setPasswordMessage('Пароли не совпадают');
+          return;
+      }
+
+      try {
+          await onUpdateStaffPassword(newStaffPassword);
+          setPasswordMessage('Пароль обновлен');
+          setNewStaffPassword('');
+          setConfirmStaffPassword('');
+      } catch (error) {
+          setPasswordMessage('Не удалось обновить пароль. Попробуйте ещё раз.');
+      }
+  };
   
   const handleGameActivityChange = (weekType: 'ODD' | 'EVEN', gameIndex: number, val: string) => {
       if (weekType === 'ODD') {
@@ -428,6 +455,44 @@ const OwnerTab: React.FC<OwnerTabProps> = ({
           </div>
       </section>
       
+      {/* Staff Access Password */}
+      <section className="bg-white rounded-xl shadow-sm border border-purple-100 overflow-hidden">
+          <div className="p-6 bg-purple-50 border-b border-purple-100 flex justify-between items-center">
+              <h2 className="text-lg font-bold text-purple-900 flex items-center gap-2">
+                  <Lock size={20} /> Доступ для сотрудников
+              </h2>
+          </div>
+          <div className="p-6">
+              <p className="text-sm text-gray-600 mb-4">Текущий пароль: <span className="font-mono font-bold text-gray-900">{staffPassword}</span></p>
+              <form onSubmit={handleStaffPasswordSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Новый пароль</label>
+                      <input 
+                          type="password"
+                          value={newStaffPassword}
+                          onChange={(e) => setNewStaffPassword(e.target.value)}
+                          className="w-full border border-gray-300 p-2 rounded bg-white text-gray-900"
+                          placeholder="Например: 3567"
+                      />
+                  </div>
+                  <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Повторите пароль</label>
+                      <input 
+                          type="password"
+                          value={confirmStaffPassword}
+                          onChange={(e) => setConfirmStaffPassword(e.target.value)}
+                          className="w-full border border-gray-300 p-2 rounded bg-white text-gray-900"
+                          placeholder="Ещё раз"
+                      />
+                  </div>
+                  <div className="md:col-span-2 flex flex-col md:flex-row gap-3 items-start md:items-center">
+                      <button type="submit" className="bg-purple-600 text-white px-4 py-2 rounded font-bold hover:bg-purple-700">Сохранить</button>
+                      {passwordMessage && <span className="text-sm text-gray-600">{passwordMessage}</span>}
+                  </div>
+              </form>
+          </div>
+      </section>
+
       {/* Admin Tasks Section (NEW) */}
       <section className="bg-white rounded-xl shadow-sm border border-teal-100 overflow-hidden">
           <div className="p-6 bg-teal-50 border-b border-teal-100 flex justify-between items-center">

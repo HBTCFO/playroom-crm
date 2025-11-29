@@ -103,6 +103,7 @@ export const DEFAULT_MINI_GAME_SETTINGS: MiniGameSettings = {
 export const DEFAULT_EXTENSION_RATE = 10; // Rubles per minute
 
 export const OWNER_PASSWORD = "28122001";
+export const DEFAULT_STAFF_PASSWORD = "3567";
 
 export const DEFAULT_BIRTHDAY_RATES: BirthdayRateSettings = {
   weekday: {

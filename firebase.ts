@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyC0xqvt5fe_8epUHFFt_EHPoLOw35KgJ3c",
+  apiKey: "AIzaSyCBxqvt5fe_8epUHFfT_ENPoLDw35KgJ3c",
   authDomain: "playroom-crm.firebaseapp.com",
   projectId: "playroom-crm",
   storageBucket: "playroom-crm.firebasestorage.app",

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { DayData, Tariff, Product, Session, Transaction, TransactionType, CalendarEvent, PaymentMethod, Discount, BirthdayRateSettings, StaffAnimator, Category, Partner, Administrator, Client, ScheduleShift, ImportantDocument, MiniGameSettings, Feedback, FeedbackType, CustomTracker, AdminTask } from './types';
-import { DEFAULT_TARIFFS, DEFAULT_PRODUCTS, DEFAULT_DISCOUNTS, DEFAULT_EXTENSION_RATE, DEFAULT_BIRTHDAY_RATES, DEFAULT_STAFF_ANIMATORS, DEFAULT_CATEGORIES, DEFAULT_PARTNERS, DEFAULT_ADMINISTRATORS, DEFAULT_CLIENTS, DEFAULT_BONUS_PERCENTAGE, DEFAULT_MINI_GAME_SETTINGS } from './constants';
+import { DEFAULT_TARIFFS, DEFAULT_PRODUCTS, DEFAULT_DISCOUNTS, DEFAULT_EXTENSION_RATE, DEFAULT_BIRTHDAY_RATES, DEFAULT_STAFF_ANIMATORS, DEFAULT_CATEGORIES, DEFAULT_PARTNERS, DEFAULT_ADMINISTRATORS, DEFAULT_CLIENTS, DEFAULT_BONUS_PERCENTAGE, DEFAULT_MINI_GAME_SETTINGS, DEFAULT_STAFF_PASSWORD } from './constants';
 import SessionsTab from './components/SessionsTab';
 import EventsTab from './components/EventsTab';
 import FinanceTab from './components/FinanceTab';
@@ -42,6 +42,9 @@ const App: React.FC = () => {
   const [miniGameSettings, setMiniGameSettings] = useState<MiniGameSettings>(DEFAULT_MINI_GAME_SETTINGS);
   const [customTrackers, setCustomTrackers] = useState<CustomTracker[]>([]);
   const [bonusPercentage, setBonusPercentage] = useState<number>(DEFAULT_BONUS_PERCENTAGE);
+  const [staffPassword, setStaffPassword] = useState<string>(DEFAULT_STAFF_PASSWORD);
+  const [isAuthorized, setIsAuthorized] = useState(false);
+  const [authError, setAuthError] = useState('');
   
   const [activeTab, setActiveTab] = useState<Tab>('SESSIONS');
 
@@ -52,6 +55,17 @@ const App: React.FC = () => {
       const localISOTime = (new Date(d.getTime() - offset)).toISOString().slice(0, 10);
       return localISOTime;
   };
+
+  useEffect(() => {
+    try {
+      const savedAuth = localStorage.getItem('playroom_staff_auth');
+      if (savedAuth === 'true') {
+          setIsAuthorized(true);
+      }
+    } catch (error) {
+      console.warn('LocalStorage is not available', error);
+    }
+  }, []);
 
   // --- FIREBASE SUBSCRIPTIONS ---
   useEffect(() => {
@@ -108,6 +122,7 @@ const App: React.FC = () => {
             setMiniGameSettings(data.miniGameSettings || DEFAULT_MINI_GAME_SETTINGS);
             setCustomTrackers(data.customTrackers || []);
             setBonusPercentage(data.bonusPercentage ?? DEFAULT_BONUS_PERCENTAGE);
+            setStaffPassword(data.staffPassword || DEFAULT_STAFF_PASSWORD);
         } else {
             // First run: Seed Database with Defaults
             const batch = writeBatch(db);
@@ -125,7 +140,8 @@ const App: React.FC = () => {
                 documents: [],
                 miniGameSettings: DEFAULT_MINI_GAME_SETTINGS,
                 customTrackers: [],
-                bonusPercentage: DEFAULT_BONUS_PERCENTAGE
+                bonusPercentage: DEFAULT_BONUS_PERCENTAGE,
+                staffPassword: DEFAULT_STAFF_PASSWORD
             });
             // Also seed clients if empty
             DEFAULT_CLIENTS.forEach(c => {
@@ -541,6 +557,39 @@ const App: React.FC = () => {
       });
   };
 
+  const handleUpdateStaffPassword = async (newPassword: string) => {
+      await saveSettings('staffPassword', newPassword);
+      setStaffPassword(newPassword);
+  };
+
+  const handleAuthSubmit = (password: string) => {
+      if (!password) {
+          setAuthError('Введите пароль');
+          return;
+      }
+
+      if (password === staffPassword) {
+          setIsAuthorized(true);
+          setAuthError('');
+          try {
+              localStorage.setItem('playroom_staff_auth', 'true');
+          } catch (error) {
+              console.warn('Unable to save auth flag', error);
+          }
+      } else {
+          setAuthError('Неверный пароль');
+      }
+  };
+
+  const handleLogout = () => {
+      setIsAuthorized(false);
+      try {
+          localStorage.removeItem('playroom_staff_auth');
+      } catch (error) {
+          console.warn('Unable to clear auth flag', error);
+      }
+  };
+
   // --- RENDER ---
   if (loading) {
       return (
@@ -549,6 +598,10 @@ const App: React.FC = () => {
               <p>Загрузка данных...</p>
           </div>
       );
+  }
+
+  if (!isAuthorized) {
+      return <LoginScreen onSubmit={handleAuthSubmit} error={authError} />;
   }
 
   const renderContent = () => {
@@ -654,6 +707,7 @@ const App: React.FC = () => {
                 miniGameSettings={miniGameSettings}
                 feedbacks={feedbacks}
                 adminTasks={adminTasks}
+                staffPassword={staffPassword}
                 onUpdateTariffs={(v) => saveSettings('tariffs', v)}
                 onUpdateProducts={(v) => saveSettings('products', v)}
                 onUpdateCategories={(v) => saveSettings('categories', v)}
@@ -671,6 +725,7 @@ const App: React.FC = () => {
                 onResolveFeedback={handleResolveFeedback}
                 onAddTask={handleAddTask}
                 onDeleteTask={handleDeleteTask}
+                onUpdateStaffPassword={handleUpdateStaffPassword}
             />
         );
         case 'ANALYTICS':
@@ -729,6 +784,12 @@ const App: React.FC = () => {
                      <p className="text-xs text-gray-500">Откройте смену в разделе "Касса"</p>
                  </div>
              )}
+             <button 
+                onClick={handleLogout}
+                className="mt-4 w-full flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 rounded-lg transition-colors"
+             >
+                <LogOut size={16}/> Выйти
+             </button>
         </div>
       </aside>
 
@@ -738,6 +799,43 @@ const App: React.FC = () => {
       </main>
     </div>
   );
+};
+
+const LoginScreen: React.FC<{ onSubmit: (password: string) => void; error: string }> = ({ onSubmit, error }) => {
+    const [value, setValue] = useState('');
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        onSubmit(value.trim());
+    };
+
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100 p-4">
+            <div className="bg-white max-w-md w-full rounded-2xl shadow-xl p-8 border border-blue-100">
+                <div className="text-center mb-6">
+                    <div className="text-2xl font-bold text-gray-900">PlayRoom CRM</div>
+                    <p className="text-sm text-gray-500 mt-2">Введите общий пароль для сотрудников</p>
+                </div>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Пароль</label>
+                        <input 
+                            type="password"
+                            value={value}
+                            onChange={(e) => setValue(e.target.value)}
+                            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-400 outline-none text-gray-900"
+                            placeholder="Введите пароль"
+                        />
+                    </div>
+                    {error && <p className="text-sm text-red-600">{error}</p>}
+                    <button type="submit" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-md transition-colors">
+                        Войти
+                    </button>
+                </form>
+                <p className="text-xs text-gray-400 mt-4 text-center">Пароль можно изменить в кабинете владельца</p>
+            </div>
+        </div>
+    );
 };
 
 const NavButton: React.FC<{ active: boolean; onClick: () => void; icon: React.ReactNode; label: string }> = ({ active, onClick, icon, label }) => (
