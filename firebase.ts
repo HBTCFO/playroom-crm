@@ -1,15 +1,25 @@
 
 import { initializeApp } from 'firebase/app';
+import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
+const requiredEnv = (key: string): string => {
+  const value = import.meta.env[key];
+  if (!value) {
+    throw new Error(`Missing required env variable: ${key}`);
+  }
+  return value;
+};
+
 const firebaseConfig = {
-  apiKey: "AIzaSyCBxqvt5fe_8epUHFfT_ENPoLDw35KgJ3c",
-  authDomain: "playroom-crm.firebaseapp.com",
-  projectId: "playroom-crm",
-  storageBucket: "playroom-crm.firebasestorage.app",
-  messagingSenderId: "858131161054",
-  appId: "1:858131161054:web:b7d267a2fcc17775bd474f"
+  apiKey: requiredEnv('VITE_FIREBASE_API_KEY'),
+  authDomain: requiredEnv('VITE_FIREBASE_AUTH_DOMAIN'),
+  projectId: requiredEnv('VITE_FIREBASE_PROJECT_ID'),
+  storageBucket: requiredEnv('VITE_FIREBASE_STORAGE_BUCKET'),
+  messagingSenderId: requiredEnv('VITE_FIREBASE_MESSAGING_SENDER_ID'),
+  appId: requiredEnv('VITE_FIREBASE_APP_ID'),
 };
 
 const app = initializeApp(firebaseConfig);
+export const auth = getAuth(app);
 export const db = getFirestore(app);

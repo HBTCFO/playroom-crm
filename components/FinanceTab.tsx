@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { DayData, TransactionType, PaymentMethod, Transaction, Administrator } from '../types';
-import { Download, ArrowUpCircle, ArrowDownCircle, Wallet, CreditCard, Coins, Banknote, TrendingUp, History, Settings, FileText, Image as ImageIcon, ChevronDown, Lock, AlertOctagon, Play } from 'lucide-react';
+import { Download, ArrowUpCircle, ArrowDownCircle, Wallet, CreditCard, Coins, Banknote, TrendingUp, History, Settings, FileText, Image as ImageIcon, ChevronDown, Lock, AlertOctagon, Play, Trash2 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 
 interface FinanceTabProps {
@@ -11,9 +11,10 @@ interface FinanceTabProps {
   onCloseDay: (actualCash: number, adminId: string) => void;
   isShiftOpen: boolean;
   onOpenDay: (date: string, adminId: string, cash: number) => void;
+  onSoftDeleteTransaction: (dayId: string, transactionId: string, reason: string) => Promise<void>;
 }
 
-const FinanceTab: React.FC<FinanceTabProps> = ({ days, currentDayId, administrators, onAddCashOp, onCloseDay, isShiftOpen, onOpenDay }) => {
+const FinanceTab: React.FC<FinanceTabProps> = ({ days, currentDayId, administrators, onAddCashOp, onCloseDay, isShiftOpen, onOpenDay, onSoftDeleteTransaction }) => {
   // Helper to get local date string YYYY-MM-DD
   const getLocalDayString = () => {
       const d = new Date();
@@ -42,6 +43,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ days, currentDayId, administrat
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [closingCashInput, setClosingCashInput] = useState('');
   const [closingAdminId, setClosingAdminId] = useState('');
+  const [deletingTxId, setDeletingTxId] = useState<string | null>(null);
 
   const dayData = days[viewDate];
 
@@ -49,6 +51,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ days, currentDayId, administrat
   const stats = useMemo(() => {
     if (!dayData) return null;
     const transactions = dayData.transactions || [];
+    const activeTransactions = transactions.filter(t => !t.isDeleted);
     
     // Revenue Logic (Sales, Extensions, Prepayments)
     const isRevenue = (t: Transaction) => 
@@ -56,20 +59,20 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ days, currentDayId, administrat
         t.type === TransactionType.EXTENSION || 
         t.type === TransactionType.PREPAYMENT;
 
-    const revenueTx = transactions.filter(isRevenue);
+    const revenueTx = activeTransactions.filter(isRevenue);
     const totalRevenue = revenueTx.reduce((sum, t) => sum + t.amount, 0);
 
     // Cash Specifics
-    const cashTx = transactions.filter(t => t.paymentMethod === PaymentMethod.CASH);
+    const cashTx = activeTransactions.filter(t => t.paymentMethod === PaymentMethod.CASH);
     const cashRevenue = cashTx.filter(isRevenue).reduce((sum, t) => sum + t.amount, 0);
     
     // Card Specifics
-    const cardTx = transactions.filter(t => t.paymentMethod === PaymentMethod.CARD);
+    const cardTx = activeTransactions.filter(t => t.paymentMethod === PaymentMethod.CARD);
     const cardRevenue = cardTx.filter(isRevenue).reduce((sum, t) => sum + t.amount, 0);
 
     // Cash Movements (Non-revenue)
-    const cashAdds = transactions.filter(t => t.type === TransactionType.ADD_CASH).reduce((sum, t) => sum + t.amount, 0);
-    const cashWithdraws = transactions.filter(t => t.type === TransactionType.WITHDRAW_CASH).reduce((sum, t) => sum + t.amount, 0);
+    const cashAdds = activeTransactions.filter(t => t.type === TransactionType.ADD_CASH).reduce((sum, t) => sum + t.amount, 0);
+    const cashWithdraws = activeTransactions.filter(t => t.type === TransactionType.WITHDRAW_CASH).reduce((sum, t) => sum + t.amount, 0);
     
     // Current Cash in Register = Opening + Sales(Cash) + Adds - Withdraws
     const cashInHand = (dayData.openingCash || 0) + cashRevenue + cashAdds - cashWithdraws;
@@ -135,6 +138,40 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ days, currentDayId, administrat
       setClosingAdminId('');
   };
 
+  const canEditHistory = !!dayData && !dayData.isClosed && viewDate === currentDayId;
+
+  const handleSoftDeleteTx = async (t: Transaction) => {
+    if (!dayData) return;
+    if (t.isDeleted) return;
+    if (!canEditHistory) {
+      alert('Удаление операций доступно только в открытой текущей смене.');
+      return;
+    }
+
+    const reason = window.prompt('Причина удаления операции (обязательно):', t.deletionReason || '');
+    if (reason === null) return;
+    const normalizedReason = reason.trim();
+    if (!normalizedReason) {
+      alert('Укажите причину удаления.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Пометить операцию как удаленную?\n\n${t.description}\n${t.amount} ₽`
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeletingTxId(t.id);
+      await onSoftDeleteTransaction(viewDate, t.id, normalizedReason);
+    } catch (error) {
+      console.error('Soft delete transaction failed', error);
+      alert('Не удалось удалить операцию. Попробуйте еще раз.');
+    } finally {
+      setDeletingTxId(null);
+    }
+  };
+
   // --- Export Functions ---
 
   const handleExportPNG = async () => {
@@ -181,9 +218,10 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ days, currentDayId, administrat
         <tr>
             <td style="border: 1px solid #ddd; padding: 8px;">${new Date(t.timestamp).toLocaleTimeString()}</td>
             <td style="border: 1px solid #ddd; padding: 8px;">${t.description}</td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${t.isDeleted ? `Удалено${t.deletionReason ? ` (${t.deletionReason})` : ''}` : ''}</td>
             <td style="border: 1px solid #ddd; padding: 8px;">${t.type === 'WITHDRAW_CASH' ? 'Изъятие' : t.type === 'ADD_CASH' ? 'Внесение' : 'Продажа'}</td>
             <td style="border: 1px solid #ddd; padding: 8px;">${t.paymentMethod}</td>
-            <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">${t.type === 'WITHDRAW_CASH' ? '-' : ''}${fmt(t.amount)}</td>
+            <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">${t.isDeleted ? '' : (t.type === 'WITHDRAW_CASH' ? '-' : '') + fmt(t.amount)}</td>
         </tr>
     `).join('');
 
@@ -241,13 +279,14 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ days, currentDayId, administrat
                     <tr>
                         <th>Время</th>
                         <th>Описание</th>
+                        <th>Статус</th>
                         <th>Тип</th>
                         <th>Способ</th>
                         <th style="text-align: right;">Сумма</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${tableRows || '<tr><td colspan="5" style="text-align:center; padding: 20px;">Нет операций</td></tr>'}
+                    ${tableRows || '<tr><td colspan="6" style="text-align:center; padding: 20px;">Нет операций</td></tr>'}
                 </tbody>
             </table>
         </body>
@@ -270,18 +309,49 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ days, currentDayId, administrat
                 <tr>
                     <th className="p-4 w-32">Время</th>
                     <th className="p-4">Описание</th>
+                    <th className="p-4 w-72">Статус / Действие</th>
                     <th className="p-4 w-32">Способ</th>
                     <th className="p-4 w-32 text-right">Сумма</th>
                 </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
                 {txs.slice().reverse().map(t => (
-                    <tr key={t.id} className="hover:bg-gray-50 transition-colors">
+                    <tr key={t.id} className={`transition-colors ${t.isDeleted ? 'bg-rose-50/40' : 'hover:bg-gray-50'}`}>
                         <td className="p-4 text-gray-500 font-mono">
                             {new Date(t.timestamp).toLocaleTimeString('ru-RU', {hour: '2-digit', minute:'2-digit'})}
                         </td>
-                        <td className="p-4 font-medium text-gray-900">
+                        <td className={`p-4 font-medium ${t.isDeleted ? 'text-gray-500 line-through' : 'text-gray-900'}`}>
                             {t.description}
+                        </td>
+                        <td className="p-4">
+                            {t.isDeleted ? (
+                                <div className="space-y-1">
+                                    <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-bold bg-rose-100 text-rose-700">
+                                        Удалено
+                                    </span>
+                                    {t.deletionReason && (
+                                        <div className="text-xs text-rose-700 break-words">
+                                            Причина: {t.deletionReason}
+                                        </div>
+                                    )}
+                                    <div className="text-[10px] text-gray-400">
+                                        {t.deletedAt ? new Date(t.deletedAt).toLocaleString('ru-RU') : ''}
+                                        {t.deletedBy ? ` • ${t.deletedBy}` : ''}
+                                    </div>
+                                </div>
+                            ) : canEditHistory ? (
+                                <button
+                                    type="button"
+                                    disabled={deletingTxId === t.id}
+                                    onClick={() => handleSoftDeleteTx(t)}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-xs font-bold disabled:opacity-50"
+                                >
+                                    <Trash2 size={12} />
+                                    {deletingTxId === t.id ? 'Удаление...' : 'Удалить'}
+                                </button>
+                            ) : (
+                                <span className="text-xs text-gray-400">-</span>
+                            )}
                         </td>
                         <td className="p-4">
                             <span className={`px-2 py-1 rounded-md text-xs font-bold flex w-fit items-center gap-1 ${
@@ -296,13 +366,13 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ days, currentDayId, administrat
                              {t.type === TransactionType.ADD_CASH && <span className="mt-1 block text-[10px] text-blue-500 font-bold uppercase tracking-wider">Внесение</span>}
                              {t.type === TransactionType.PREPAYMENT && <span className="mt-1 block text-[10px] text-yellow-600 font-bold uppercase tracking-wider">Предоплата</span>}
                         </td>
-                        <td className={`p-4 text-right font-bold ${t.type === TransactionType.WITHDRAW_CASH ? 'text-red-600' : 'text-gray-900'}`}>
-                            {t.type === TransactionType.WITHDRAW_CASH ? '-' : '+'}{t.amount.toLocaleString()} ₽
+                        <td className={`p-4 text-right font-bold ${t.isDeleted ? 'text-gray-400 line-through' : t.type === TransactionType.WITHDRAW_CASH ? 'text-red-600' : 'text-gray-900'}`}>
+                            {t.isDeleted ? 'Удалено' : `${t.type === TransactionType.WITHDRAW_CASH ? '-' : '+'}${t.amount.toLocaleString()} ₽`}
                         </td>
                     </tr>
                 ))}
                 {txs.length === 0 && (
-                    <tr><td colSpan={4} className="p-8 text-center text-gray-400">Нет операций за этот день</td></tr>
+                    <tr><td colSpan={5} className="p-8 text-center text-gray-400">Нет операций за этот день</td></tr>
                 )}
             </tbody>
         </table>

@@ -1,5 +1,5 @@
 
-import { Tariff, Product, Discount, BirthdayRateSettings, StaffAnimator, Category, Partner, Administrator, Client, MiniGameSettings } from './types';
+import { Tariff, Product, Discount, BirthdayRateSettings, StaffAnimator, Category, Partner, Administrator, Client, MiniGameSettings, SubscriptionPlan } from './types';
 
 export const DEFAULT_TARIFFS: Tariff[] = [
   { id: 't1', name: '30 Минут', durationMinutes: 30, price: 300 },
@@ -100,10 +100,12 @@ export const DEFAULT_MINI_GAME_SETTINGS: MiniGameSettings = {
     ]
 };
 
+export const DEFAULT_SUBSCRIPTION_PLANS: SubscriptionPlan[] = [];
+
 export const DEFAULT_EXTENSION_RATE = 10; // Rubles per minute
 
-export const OWNER_PASSWORD = "28122001";
-export const DEFAULT_STAFF_PASSWORD = "3567";
+export const OWNER_PASSWORD = import.meta.env.VITE_OWNER_PASSWORD || '';
+export const DEFAULT_STAFF_PASSWORD = import.meta.env.VITE_DEFAULT_STAFF_PASSWORD || '';
 
 export const DEFAULT_BIRTHDAY_RATES: BirthdayRateSettings = {
   weekday: {

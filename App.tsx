@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { DayData, Tariff, Product, Session, Transaction, TransactionType, CalendarEvent, PaymentMethod, Discount, BirthdayRateSettings, StaffAnimator, Category, Partner, Administrator, Client, ScheduleShift, ImportantDocument, MiniGameSettings, Feedback, FeedbackType, CustomTracker, AdminTask } from './types';
-import { DEFAULT_TARIFFS, DEFAULT_PRODUCTS, DEFAULT_DISCOUNTS, DEFAULT_EXTENSION_RATE, DEFAULT_BIRTHDAY_RATES, DEFAULT_STAFF_ANIMATORS, DEFAULT_CATEGORIES, DEFAULT_PARTNERS, DEFAULT_ADMINISTRATORS, DEFAULT_CLIENTS, DEFAULT_BONUS_PERCENTAGE, DEFAULT_MINI_GAME_SETTINGS, DEFAULT_STAFF_PASSWORD } from './constants';
+import { DayData, Tariff, Product, Session, Transaction, TransactionType, CalendarEvent, PaymentMethod, Discount, BirthdayRateSettings, StaffAnimator, Category, Partner, Administrator, Client, ScheduleShift, ImportantDocument, MiniGameSettings, Feedback, FeedbackType, CustomTracker, AdminTask, SubscriptionPlan, ClientSubscription } from './types';
+import { DEFAULT_TARIFFS, DEFAULT_PRODUCTS, DEFAULT_DISCOUNTS, DEFAULT_EXTENSION_RATE, DEFAULT_BIRTHDAY_RATES, DEFAULT_STAFF_ANIMATORS, DEFAULT_CATEGORIES, DEFAULT_PARTNERS, DEFAULT_ADMINISTRATORS, DEFAULT_BONUS_PERCENTAGE, DEFAULT_MINI_GAME_SETTINGS, DEFAULT_STAFF_PASSWORD, DEFAULT_SUBSCRIPTION_PLANS } from './constants';
 import SessionsTab from './components/SessionsTab';
 import EventsTab from './components/EventsTab';
 import FinanceTab from './components/FinanceTab';
@@ -9,15 +9,36 @@ import OwnerTab from './components/OwnerTab';
 import ClientsTab from './components/ClientsTab';
 import AdminTab from './components/AdminTab';
 import AnalyticsTab from './components/AnalyticsTab';
-import { LayoutDashboard, CalendarDays, BadgeDollarSign, Coffee, UserCog, LogOut, Users, ShieldCheck, BarChart3, Loader2 } from 'lucide-react';
+import { LayoutDashboard, CalendarDays, BadgeDollarSign, Coffee, UserCog, LogOut, Users, ShieldCheck, BarChart3, Loader2, AlertTriangle } from 'lucide-react';
 
 // Firebase Imports
-import { db } from './firebase';
-import { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
+import { auth, db } from './firebase';
+import { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, addDoc } from 'firebase/firestore';
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 
 type Tab = 'SESSIONS' | 'EVENTS' | 'FINANCE' | 'GOODS' | 'OWNER' | 'CLIENTS' | 'ADMIN' | 'ANALYTICS';
 
+type SettingsConfig = {
+  tariffs: Tariff[];
+  products: Product[];
+  categories: Category[];
+  discounts: Discount[];
+  extensionRate: number;
+  birthdayRates: BirthdayRateSettings;
+  staffAnimators: StaffAnimator[];
+  partners: Partner[];
+  administrators: Administrator[];
+  documents: ImportantDocument[];
+  miniGameSettings: MiniGameSettings;
+  customTrackers: CustomTracker[];
+  bonusPercentage: number;
+  staffPassword: string;
+  subscriptionPlans: SubscriptionPlan[];
+};
+
 const App: React.FC = () => {
+  const requireFirebaseAuth = import.meta.env.VITE_REQUIRE_FIREBASE_AUTH === 'true';
+
   // Global State (Data fetched from Firebase)
   const [loading, setLoading] = useState(true);
   const [currentDayId, setCurrentDayId] = useState<string | null>(null);
@@ -43,8 +64,13 @@ const App: React.FC = () => {
   const [customTrackers, setCustomTrackers] = useState<CustomTracker[]>([]);
   const [bonusPercentage, setBonusPercentage] = useState<number>(DEFAULT_BONUS_PERCENTAGE);
   const [staffPassword, setStaffPassword] = useState<string>(DEFAULT_STAFF_PASSWORD);
+  const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionPlan[]>(DEFAULT_SUBSCRIPTION_PLANS);
+  const [settingsMissing, setSettingsMissing] = useState(false);
+  const [isRestoringSettings, setIsRestoringSettings] = useState(false);
+  const [dbError, setDbError] = useState<string | null>(null);
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [authReady, setAuthReady] = useState(!requireFirebaseAuth);
   
   const [activeTab, setActiveTab] = useState<Tab>('SESSIONS');
 
@@ -56,7 +82,93 @@ const App: React.FC = () => {
       return localISOTime;
   };
 
+  const toEndOfDayIsoAfterDays = (validityDays: number) => {
+      const now = new Date();
+      const target = new Date(now);
+      target.setDate(target.getDate() + Math.max(0, Math.floor(validityDays)));
+      target.setHours(23, 59, 59, 999);
+      return target.toISOString();
+  };
+
+  const getSubscriptionComputedStatus = (subscription: ClientSubscription, nowIso = new Date().toISOString()): ClientSubscription['status'] => {
+      if (subscription.status === 'CANCELLED') return 'CANCELLED';
+      if ((subscription.remainingMinutes || 0) <= 0) return 'USED_UP';
+      if (subscription.expiresAt && subscription.expiresAt < nowIso) return 'EXPIRED';
+      return 'ACTIVE';
+  };
+
+  const getClientActiveSubscriptions = (client?: Client | null) => {
+      if (!client?.subscriptions) return [] as ClientSubscription[];
+      const nowIso = new Date().toISOString();
+      return client.subscriptions
+          .map(sub => ({ ...sub, status: getSubscriptionComputedStatus(sub, nowIso) }))
+          .filter(sub => sub.status === 'ACTIVE' && (sub.remainingMinutes || 0) > 0)
+          .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));
+  };
+
+  const buildDefaultSettings = (): SettingsConfig => ({
+    tariffs: DEFAULT_TARIFFS,
+    products: DEFAULT_PRODUCTS,
+    categories: DEFAULT_CATEGORIES,
+    discounts: DEFAULT_DISCOUNTS,
+    extensionRate: DEFAULT_EXTENSION_RATE,
+    birthdayRates: DEFAULT_BIRTHDAY_RATES,
+    staffAnimators: DEFAULT_STAFF_ANIMATORS,
+    partners: DEFAULT_PARTNERS,
+    administrators: DEFAULT_ADMINISTRATORS,
+    documents: [],
+    miniGameSettings: DEFAULT_MINI_GAME_SETTINGS,
+    customTrackers: [],
+    bonusPercentage: DEFAULT_BONUS_PERCENTAGE,
+    staffPassword: DEFAULT_STAFF_PASSWORD,
+    subscriptionPlans: DEFAULT_SUBSCRIPTION_PLANS
+  });
+
+  const applySettings = (data: Partial<SettingsConfig>) => {
+    setTariffs(data.tariffs || []);
+    setProducts(data.products || []);
+    setCategories(data.categories || []);
+    setDiscounts(data.discounts || []);
+    setExtensionRate(data.extensionRate ?? DEFAULT_EXTENSION_RATE);
+    setBirthdayRates(data.birthdayRates || DEFAULT_BIRTHDAY_RATES);
+    setStaffAnimators(data.staffAnimators || []);
+    setPartners(data.partners || []);
+    setAdministrators(data.administrators || []);
+    setDocuments(data.documents || []);
+    setMiniGameSettings(data.miniGameSettings || DEFAULT_MINI_GAME_SETTINGS);
+    setCustomTrackers(data.customTrackers || []);
+    setBonusPercentage(data.bonusPercentage ?? DEFAULT_BONUS_PERCENTAGE);
+    setStaffPassword(data.staffPassword || DEFAULT_STAFF_PASSWORD);
+    setSubscriptionPlans(data.subscriptionPlans || DEFAULT_SUBSCRIPTION_PLANS);
+  };
+
+  const logAudit = async (action: string, details: Record<string, unknown>) => {
+    try {
+      await addDoc(collection(db, 'auditLogs'), {
+        action,
+        details,
+        createdAt: new Date().toISOString()
+      });
+    } catch (error) {
+      console.warn('Audit log failed', error);
+    }
+  };
+
+  const restoreSettingsConfig = async (settings: SettingsConfig, source: 'default' | 'import') => {
+    setIsRestoringSettings(true);
+    try {
+      await setDoc(doc(db, 'settings', 'config'), settings);
+      await logAudit('settings_restore', { source });
+      setSettingsMissing(false);
+    } finally {
+      setIsRestoringSettings(false);
+    }
+  };
+
   useEffect(() => {
+    if (requireFirebaseAuth) {
+      return;
+    }
     try {
       const savedAuth = localStorage.getItem('playroom_staff_auth');
       if (savedAuth === 'true') {
@@ -65,12 +177,39 @@ const App: React.FC = () => {
     } catch (error) {
       console.warn('LocalStorage is not available', error);
     }
-  }, []);
+  }, [requireFirebaseAuth]);
+
+  useEffect(() => {
+    if (!requireFirebaseAuth) {
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setIsAuthorized(!!user);
+      setAuthReady(true);
+    });
+
+    return unsubscribe;
+  }, [requireFirebaseAuth]);
 
   // --- FIREBASE SUBSCRIPTIONS ---
   useEffect(() => {
+    if (requireFirebaseAuth && !isAuthorized) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+
     // 1. Subscribe to Days
+    const handleSnapshotError = (error: Error) => {
+        console.error('Firestore subscription error', error);
+        setDbError(error.message || 'Firestore error');
+        setLoading(false);
+    };
+
     const unsubDays = onSnapshot(collection(db, 'days'), (snapshot) => {
+        setDbError(null);
         const daysData: Record<string, DayData> = {};
         snapshot.forEach(doc => {
             daysData[doc.id] = doc.data() as DayData;
@@ -82,75 +221,40 @@ const App: React.FC = () => {
         if (daysData[today] && !daysData[today].isClosed) {
             setCurrentDayId(today);
         }
-    });
+    }, handleSnapshotError);
 
     // 2. Subscribe to Clients
     const unsubClients = onSnapshot(collection(db, 'clients'), (snapshot) => {
         setClients(snapshot.docs.map(d => d.data() as Client));
-    });
+    }, handleSnapshotError);
 
     // 3. Subscribe to Events
     const unsubEvents = onSnapshot(collection(db, 'events'), (snapshot) => {
         setEvents(snapshot.docs.map(d => d.data() as CalendarEvent));
-    });
+    }, handleSnapshotError);
 
     // 4. Subscribe to Feedback & Tasks & Schedule
     const unsubFeedback = onSnapshot(collection(db, 'feedbacks'), (snapshot) => {
         setFeedbacks(snapshot.docs.map(d => d.data() as Feedback));
-    });
+    }, handleSnapshotError);
     const unsubTasks = onSnapshot(collection(db, 'adminTasks'), (snapshot) => {
         setAdminTasks(snapshot.docs.map(d => d.data() as AdminTask));
-    });
+    }, handleSnapshotError);
     const unsubSchedule = onSnapshot(collection(db, 'schedule'), (snapshot) => {
         setSchedule(snapshot.docs.map(d => d.data() as ScheduleShift));
-    });
+    }, handleSnapshotError);
 
     // 5. Subscribe to Settings (Single Doc)
     const unsubSettings = onSnapshot(doc(db, 'settings', 'config'), (docSnap) => {
+        setDbError(null);
         if (docSnap.exists()) {
-            const data = docSnap.data();
-            setTariffs(data.tariffs || []);
-            setProducts(data.products || []);
-            setCategories(data.categories || []);
-            setDiscounts(data.discounts || []);
-            setExtensionRate(data.extensionRate ?? DEFAULT_EXTENSION_RATE);
-            setBirthdayRates(data.birthdayRates || DEFAULT_BIRTHDAY_RATES);
-            setStaffAnimators(data.staffAnimators || []);
-            setPartners(data.partners || []);
-            setAdministrators(data.administrators || []);
-            setDocuments(data.documents || []);
-            setMiniGameSettings(data.miniGameSettings || DEFAULT_MINI_GAME_SETTINGS);
-            setCustomTrackers(data.customTrackers || []);
-            setBonusPercentage(data.bonusPercentage ?? DEFAULT_BONUS_PERCENTAGE);
-            setStaffPassword(data.staffPassword || DEFAULT_STAFF_PASSWORD);
+            applySettings(docSnap.data() as Partial<SettingsConfig>);
+            setSettingsMissing(false);
         } else {
-            // First run: Seed Database with Defaults
-            const batch = writeBatch(db);
-            const settingsRef = doc(db, 'settings', 'config');
-            batch.set(settingsRef, {
-                tariffs: DEFAULT_TARIFFS,
-                products: DEFAULT_PRODUCTS,
-                categories: DEFAULT_CATEGORIES,
-                discounts: DEFAULT_DISCOUNTS,
-                extensionRate: DEFAULT_EXTENSION_RATE,
-                birthdayRates: DEFAULT_BIRTHDAY_RATES,
-                staffAnimators: DEFAULT_STAFF_ANIMATORS,
-                partners: DEFAULT_PARTNERS,
-                administrators: DEFAULT_ADMINISTRATORS,
-                documents: [],
-                miniGameSettings: DEFAULT_MINI_GAME_SETTINGS,
-                customTrackers: [],
-                bonusPercentage: DEFAULT_BONUS_PERCENTAGE,
-                staffPassword: DEFAULT_STAFF_PASSWORD
-            });
-            // Also seed clients if empty
-            DEFAULT_CLIENTS.forEach(c => {
-                batch.set(doc(db, 'clients', c.id), c);
-            });
-            batch.commit().catch(console.error);
+            setSettingsMissing(true);
         }
         setLoading(false);
-    });
+    }, handleSnapshotError);
 
     return () => {
         unsubDays();
@@ -161,11 +265,15 @@ const App: React.FC = () => {
         unsubSchedule();
         unsubSettings();
     };
-  }, []);
+  }, [isAuthorized, requireFirebaseAuth]);
 
   // --- DB Helper Wrappers ---
   const saveSettings = async (field: string, value: any) => {
+      if (settingsMissing) {
+          throw new Error('settings/config is missing');
+      }
       await updateDoc(doc(db, 'settings', 'config'), { [field]: value });
+      await logAudit('settings_update', { field });
   };
 
   // --- Handlers (Now Writing to DB) ---
@@ -202,26 +310,178 @@ const App: React.FC = () => {
             notes: 'Автоматически создан при посещении',
             bonusCardNumber: Math.floor(100000 + Math.random() * 900000).toString(),
             bonusBalance: initialBonus,
-            isAddedToContacts: false
+            isAddedToContacts: false,
+            subscriptions: []
         };
         await setDoc(doc(db, 'clients', newClient.id), newClient);
     }
   };
 
-  const handleUpdateClients = (newClients: Client[]) => {
-      newClients.forEach(c => {
-          setDoc(doc(db, 'clients', c.id), c); 
-      });
+  const handleUpdateClients = async (newClients: Client[]) => {
+      await Promise.all(
+          newClients.map(c => {
+              const sanitized = JSON.parse(JSON.stringify(c)) as Client;
+              return setDoc(doc(db, 'clients', c.id), sanitized);
+          })
+      );
   };
 
   const handleDeleteClient = async (clientId: string) => {
       await deleteDoc(doc(db, 'clients', clientId));
   };
 
-  const handleIssueBonusCard = async (clientId: string) => {
+  const updateClientSubscriptions = async (
+      clientId: string,
+      updater: (client: Client) => { nextClient: Client; audit?: { action: string; details: Record<string, unknown> } }
+  ) => {
+      const client = clients.find(c => c.id === clientId);
+      if (!client) throw new Error('Client not found');
+
+      const { nextClient, audit } = updater(client);
+      const sanitized = JSON.parse(JSON.stringify(nextClient)) as Client;
+      await setDoc(doc(db, 'clients', clientId), sanitized);
+      if (audit) {
+          await logAudit(audit.action, { clientId, ...audit.details });
+      }
+  };
+
+  const handleIssueBonusCard = async (clientId: string, initialBonus: number = 0) => {
+      const normalizedInitialBonus = Math.max(0, Math.floor(Number(initialBonus) || 0));
       await updateDoc(doc(db, 'clients', clientId), {
           bonusCardNumber: Math.floor(100000 + Math.random() * 900000).toString(),
-          bonusBalance: 0
+          bonusBalance: normalizedInitialBonus
+      });
+      await logAudit('client_bonus_card_issued', { clientId, initialBonus: normalizedInitialBonus });
+  };
+
+  const handleAddClientBonusesManual = async (clientId: string, amount: number) => {
+      const normalizedAmount = Math.max(0, Math.floor(Number(amount) || 0));
+      if (!normalizedAmount) return;
+
+      const client = clients.find(c => c.id === clientId);
+      if (!client) return;
+
+      const current = client.bonusBalance || 0;
+      const next = current + normalizedAmount;
+
+      await updateDoc(doc(db, 'clients', clientId), {
+          bonusBalance: next
+      });
+      await logAudit('client_bonus_manual_add', {
+          clientId,
+          added: normalizedAmount,
+          previousBalance: current,
+          newBalance: next
+      });
+  };
+
+  const handleSellClientSubscription = async (
+      clientId: string,
+      planId: string,
+      method: PaymentMethod,
+      note?: string
+  ) => {
+      const plan = subscriptionPlans.find(p => p.id === planId && p.isActive);
+      if (!plan) throw new Error('Subscription plan not found');
+      if (!currentDayId || !days[currentDayId] || days[currentDayId].isClosed) {
+          throw new Error('Open shift is required to sell subscription');
+      }
+
+      const day = days[currentDayId];
+      const client = clients.find(c => c.id === clientId);
+      if (!client) throw new Error('Client not found');
+
+      const purchasedAt = new Date().toISOString();
+      const newSubscription: ClientSubscription = {
+          id: `sub_${Date.now()}`,
+          planId: plan.id,
+          planName: plan.name,
+          totalMinutes: plan.totalMinutes,
+          remainingMinutes: plan.totalMinutes,
+          purchasedAt,
+          expiresAt: toEndOfDayIsoAfterDays(plan.validityDays),
+          status: 'ACTIVE',
+          pricePaid: plan.price,
+          paymentMethod: method,
+          notes: note?.trim() || null
+      };
+
+      const updatedClient: Client = {
+          ...client,
+          subscriptions: [...(client.subscriptions || []), newSubscription]
+      };
+
+      const tx: Transaction = {
+          id: `tx_sub_${Date.now()}`,
+          timestamp: Date.now(),
+          amount: plan.price,
+          type: TransactionType.SALE,
+          paymentMethod: method,
+          description: `Абонемент: ${plan.name} -> ${client.name}`,
+          relatedSessionId: null,
+          relatedEventId: null
+      };
+
+      const sanitizedClient = JSON.parse(JSON.stringify(updatedClient)) as Client;
+      await Promise.all([
+          setDoc(doc(db, 'clients', clientId), sanitizedClient),
+          updateDoc(doc(db, 'days', currentDayId), {
+              transactions: [...(day.transactions || []), tx]
+          })
+      ]);
+
+      await logAudit('client_subscription_sold', {
+          clientId,
+          subscriptionId: newSubscription.id,
+          planId: plan.id,
+          planName: plan.name,
+          totalMinutes: plan.totalMinutes,
+          price: plan.price,
+          paymentMethod: method,
+          dayId: currentDayId,
+          note: note?.trim() || null
+      });
+  };
+
+  const handleAdjustClientSubscriptionMinutes = async (
+      clientId: string,
+      subscriptionId: string,
+      deltaMinutes: number,
+      reason: string
+  ) => {
+      const normalizedDelta = Math.trunc(deltaMinutes);
+      if (!normalizedDelta) throw new Error('Delta minutes is zero');
+      const normalizedReason = reason.trim();
+      if (!normalizedReason) throw new Error('Reason is required');
+
+      await updateClientSubscriptions(clientId, (client) => {
+          const subscriptions = [...(client.subscriptions || [])];
+          const index = subscriptions.findIndex(s => s.id === subscriptionId);
+          if (index < 0) throw new Error('Subscription not found');
+
+          const currentSub = subscriptions[index];
+          const nextRemaining = Math.max(0, (currentSub.remainingMinutes || 0) + normalizedDelta);
+          const updatedSub: ClientSubscription = {
+              ...currentSub,
+              remainingMinutes: nextRemaining,
+          };
+          updatedSub.status = getSubscriptionComputedStatus(updatedSub);
+          subscriptions[index] = updatedSub;
+
+          return {
+              nextClient: { ...client, subscriptions },
+              audit: {
+                  action: 'client_subscription_minutes_adjusted',
+                  details: {
+                      subscriptionId,
+                      planName: currentSub.planName,
+                      deltaMinutes: normalizedDelta,
+                      reason: normalizedReason,
+                      previousRemainingMinutes: currentSub.remainingMinutes || 0,
+                      newRemainingMinutes: nextRemaining
+                  }
+              }
+          };
       });
   };
 
@@ -280,7 +540,7 @@ const App: React.FC = () => {
       if (!currentDayId) return;
       const day = days[currentDayId];
       
-      const transactions = day.transactions || [];
+      const transactions = (day.transactions || []).filter(t => !t.isDeleted);
       const cashRevenue = transactions
         .filter(t => t.paymentMethod === PaymentMethod.CASH && (t.type === 'SALE' || t.type === 'EXTENSION' || t.type === 'PREPAYMENT'))
         .reduce((sum, t) => sum + t.amount, 0);
@@ -322,6 +582,7 @@ const App: React.FC = () => {
 
   const handleDeleteDay = async (date: string) => {
       await deleteDoc(doc(db, 'days', date));
+      await logAudit('day_deleted', { date });
       if (currentDayId === date) setCurrentDayId(null);
   };
 
@@ -330,7 +591,26 @@ const App: React.FC = () => {
       if (!currentDayId) return;
       const day = days[currentDayId];
       
-      const { price, paymentMethod, useBonuses = 0, accruedBonuses = 0, parentPhone } = sessionData;
+      const { price, paymentMethod, useBonuses = 0, accruedBonuses = 0, parentPhone, subscriptionUsage } = sessionData;
+      const isSubscriptionPayment = !!subscriptionUsage;
+      const safeBonusesUsed = isSubscriptionPayment ? 0 : useBonuses;
+      const safeAccruedBonuses = isSubscriptionPayment ? 0 : accruedBonuses;
+      const subscriptionClient = isSubscriptionPayment && parentPhone ? clients.find(c => c.phone === parentPhone) : null;
+      const targetSubscription = isSubscriptionPayment && subscriptionClient && subscriptionUsage
+          ? (subscriptionClient.subscriptions || []).find(s => s.id === subscriptionUsage.subscriptionId)
+          : null;
+
+      if (isSubscriptionPayment) {
+          if (!subscriptionClient || !targetSubscription) {
+              alert('Не удалось списать абонементные минуты. Проверьте клиента и повторите попытку.');
+              return;
+          }
+          const computedStatus = getSubscriptionComputedStatus(targetSubscription);
+          if (computedStatus !== 'ACTIVE' || (targetSubscription.remainingMinutes || 0) < (subscriptionUsage.minutesUsed || 0)) {
+              alert('Абонемент недоступен или недостаточно минут.');
+              return;
+          }
+      }
 
       const newSession: Session = {
           id: Date.now().toString(),
@@ -338,14 +618,15 @@ const App: React.FC = () => {
           endTime: sessionData.duration > 0 ? Date.now() + sessionData.duration * 60000 : null,
           isActive: true,
           extraItems: [],
-          paidWithBonuses: useBonuses,
-          accruedBonuses: accruedBonuses,
+          paidWithBonuses: safeBonusesUsed,
+          accruedBonuses: safeAccruedBonuses,
           discountReason: sessionData.discountReason || null, // Sanitize undefined
           parentPhone: sessionData.parentPhone || null, // Sanitize undefined
+          subscriptionUsage: subscriptionUsage || null,
           ...sessionData
       };
 
-      const actualMoneyPaid = price - useBonuses;
+      const actualMoneyPaid = isSubscriptionPayment ? 0 : (price - safeBonusesUsed);
       let newTransaction: Transaction | null = null;
       
       if (actualMoneyPaid > 0) {
@@ -355,7 +636,7 @@ const App: React.FC = () => {
             amount: actualMoneyPaid,
             type: TransactionType.SALE,
             paymentMethod: paymentMethod,
-            description: `Сессия: ${sessionData.childName} (${sessionData.tariffName}) ${useBonuses > 0 ? `[Бонусы: ${useBonuses}]` : ''}`,
+            description: `Сессия: ${sessionData.childName} (${sessionData.tariffName}) ${safeBonusesUsed > 0 ? `[Бонусы: ${safeBonusesUsed}]` : ''}`,
             relatedSessionId: newSession.id
           };
       }
@@ -363,13 +644,42 @@ const App: React.FC = () => {
       const updatedSessions = [...day.sessions, newSession];
       const updatedTransactions = newTransaction ? [...day.transactions, newTransaction] : day.transactions;
 
-      await updateDoc(doc(db, 'days', currentDayId), {
-          sessions: updatedSessions,
-          transactions: updatedTransactions
-      });
+      const writes: Promise<unknown>[] = [
+          updateDoc(doc(db, 'days', currentDayId), {
+              sessions: updatedSessions,
+              transactions: updatedTransactions
+          })
+      ];
+
+      if (isSubscriptionPayment && subscriptionUsage && subscriptionClient && targetSubscription) {
+          const subscriptions = [...(subscriptionClient.subscriptions || [])];
+          const index = subscriptions.findIndex(s => s.id === subscriptionUsage.subscriptionId);
+          const nextRemaining = Math.max(0, (targetSubscription.remainingMinutes || 0) - (subscriptionUsage.minutesUsed || 0));
+          const updatedSub: ClientSubscription = {
+              ...targetSubscription,
+              remainingMinutes: nextRemaining,
+          };
+          updatedSub.status = getSubscriptionComputedStatus(updatedSub);
+          subscriptions[index] = updatedSub;
+          const updatedClient: Client = { ...subscriptionClient, subscriptions };
+          const sanitizedClient = JSON.parse(JSON.stringify(updatedClient)) as Client;
+          writes.push(setDoc(doc(db, 'clients', subscriptionClient.id), sanitizedClient));
+          writes.push(logAudit('client_subscription_minutes_used', {
+              clientId: subscriptionClient.id,
+              dayId: currentDayId,
+              sessionId: newSession.id,
+              subscriptionId: targetSubscription.id,
+              planName: targetSubscription.planName,
+              minutesUsed: subscriptionUsage.minutesUsed,
+              previousRemainingMinutes: targetSubscription.remainingMinutes || 0,
+              newRemainingMinutes: nextRemaining
+          }));
+      }
+
+      await Promise.all(writes);
 
       if (parentPhone) {
-          updateClientBonuses(parentPhone, useBonuses, accruedBonuses);
+          updateClientBonuses(parentPhone, safeBonusesUsed, safeAccruedBonuses);
       }
   };
 
@@ -380,7 +690,78 @@ const App: React.FC = () => {
       await updateDoc(doc(db, 'days', currentDayId), { sessions: updatedSessions });
   };
 
-  const handleAddExtraItem = async (sessionId: string, product: Product) => {
+  const handleReverseSessionSubscriptionUsage = async (dayId: string, sessionId: string, reason: string) => {
+      const day = days[dayId];
+      if (!day) {
+          throw new Error('Day not found');
+      }
+      const session = day.sessions.find(s => s.id === sessionId);
+      if (!session?.subscriptionUsage) {
+          throw new Error('Subscription usage not found in session');
+      }
+      if (session.subscriptionUsage.isReversed) {
+          throw new Error('Subscription usage already reversed');
+      }
+      if (!session.parentPhone) {
+          throw new Error('Session client phone is missing');
+      }
+
+      const client = clients.find(c => c.phone === session.parentPhone);
+      if (!client) {
+          throw new Error('Client not found');
+      }
+
+      const subscriptions = [...(client.subscriptions || [])];
+      const subIndex = subscriptions.findIndex(s => s.id === session.subscriptionUsage!.subscriptionId);
+      if (subIndex < 0) {
+          throw new Error('Client subscription not found');
+      }
+
+      const targetSub = subscriptions[subIndex];
+      const previousRemaining = targetSub.remainingMinutes || 0;
+      const nextRemaining = previousRemaining + (session.subscriptionUsage.minutesUsed || 0);
+      const updatedSub: ClientSubscription = {
+          ...targetSub,
+          remainingMinutes: nextRemaining
+      };
+      updatedSub.status = getSubscriptionComputedStatus(updatedSub);
+      subscriptions[subIndex] = updatedSub;
+
+      const updatedSessions = day.sessions.map(s => {
+          if (s.id !== sessionId || !s.subscriptionUsage) return s;
+          return {
+              ...s,
+              subscriptionUsage: {
+                  ...s.subscriptionUsage,
+                  isReversed: true,
+                  reversedAt: new Date().toISOString(),
+                  reversalReason: reason
+              }
+          };
+      });
+
+      const updatedClient: Client = { ...client, subscriptions };
+      const sanitizedClient = JSON.parse(JSON.stringify(updatedClient)) as Client;
+
+      await Promise.all([
+          updateDoc(doc(db, 'days', dayId), { sessions: updatedSessions }),
+          setDoc(doc(db, 'clients', client.id), sanitizedClient),
+      ]);
+
+      await logAudit('client_subscription_minutes_reversed', {
+          dayId,
+          sessionId,
+          clientId: client.id,
+          subscriptionId: targetSub.id,
+          planName: targetSub.planName,
+          minutesRestored: session.subscriptionUsage.minutesUsed,
+          previousRemainingMinutes: previousRemaining,
+          newRemainingMinutes: nextRemaining,
+          reason
+      });
+  };
+
+  const handleAddExtraItem = async (sessionId: string, product: Product, method: PaymentMethod) => {
       if (!currentDayId) return;
       const day = days[currentDayId];
       const session = day.sessions.find(s => s.id === sessionId);
@@ -409,7 +790,7 @@ const App: React.FC = () => {
          timestamp: Date.now(),
          amount: product.price,
          type: TransactionType.SALE,
-         paymentMethod: PaymentMethod.CASH, 
+         paymentMethod: method,
          description: `Товар: ${product.name} -> ${session.childName}`,
          relatedSessionId: sessionId
       };
@@ -483,6 +864,38 @@ const App: React.FC = () => {
 
   const handleAddCashOp = (amount: number, type: TransactionType, description: string) => {
       handleAddTransaction(amount, type, PaymentMethod.CASH, description);
+  };
+
+  const handleSoftDeleteTransaction = async (dayId: string, transactionId: string, reason: string) => {
+      const day = days[dayId];
+      if (!day) return;
+
+      const existingTx = (day.transactions || []).find(t => t.id === transactionId);
+      if (!existingTx || existingTx.isDeleted) return;
+
+      const updatedTransactions = (day.transactions || []).map(t => {
+          if (t.id !== transactionId) return t;
+          return {
+              ...t,
+              isDeleted: true,
+              deletedAt: new Date().toISOString(),
+              deletedBy: day.adminName || 'Unknown',
+              deletionReason: reason
+          };
+      });
+
+      await updateDoc(doc(db, 'days', dayId), { transactions: updatedTransactions });
+      await logAudit('transaction_soft_deleted', {
+          dayId,
+          transactionId,
+          reason,
+          amount: existingTx.amount,
+          type: existingTx.type,
+          paymentMethod: existingTx.paymentMethod,
+          description: existingTx.description,
+          relatedSessionId: existingTx.relatedSessionId || null,
+          relatedEventId: existingTx.relatedEventId || null
+      });
   };
 
   // ADMIN / CLEANING
@@ -560,9 +973,88 @@ const App: React.FC = () => {
   const handleUpdateStaffPassword = async (newPassword: string) => {
       await saveSettings('staffPassword', newPassword);
       setStaffPassword(newPassword);
+      await logAudit('staff_password_updated', {});
+  };
+
+  const handleInitializeDefaultSettings = async () => {
+      await restoreSettingsConfig(buildDefaultSettings(), 'default');
+  };
+
+  const handleImportSettings = async (file: File) => {
+      const raw = await file.text();
+      const parsed = JSON.parse(raw) as Partial<SettingsConfig>;
+      const merged: SettingsConfig = {
+          ...buildDefaultSettings(),
+          ...parsed
+      };
+      await restoreSettingsConfig(merged, 'import');
+  };
+
+  const downloadJsonFile = (filename: string, payload: unknown) => {
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+  };
+
+  const buildSettingsPayload = (): SettingsConfig => ({
+      tariffs,
+      products,
+      categories,
+      discounts,
+      extensionRate,
+      birthdayRates,
+      staffAnimators,
+      partners,
+      administrators,
+      documents,
+      miniGameSettings,
+      customTrackers,
+      bonusPercentage,
+      staffPassword,
+      subscriptionPlans
+  });
+
+  const handleExportSettings = () => {
+      downloadJsonFile(
+          `settings-config-backup-${new Date().toISOString().slice(0, 10)}.json`,
+          buildSettingsPayload()
+      );
+      logAudit('settings_exported', {});
+  };
+
+  const handleExportClients = () => {
+      downloadJsonFile(
+          `clients-backup-${new Date().toISOString().slice(0, 10)}.json`,
+          {
+              exportedAt: new Date().toISOString(),
+              totalClients: clients.length,
+              clients
+          }
+      );
+      logAudit('clients_exported', { totalClients: clients.length });
+  };
+
+  const handleExportFullBackup = () => {
+      downloadJsonFile(
+          `full-backup-settings-clients-${new Date().toISOString().slice(0, 10)}.json`,
+          {
+              exportedAt: new Date().toISOString(),
+              settings: buildSettingsPayload(),
+              totalClients: clients.length,
+              clients
+          }
+      );
+      logAudit('full_backup_exported', { totalClients: clients.length });
   };
 
   const handleAuthSubmit = (password: string) => {
+      if (requireFirebaseAuth) {
+          return;
+      }
       if (!password) {
           setAuthError('Введите пароль');
           return;
@@ -581,7 +1073,26 @@ const App: React.FC = () => {
       }
   };
 
-  const handleLogout = () => {
+  const handleFirebaseAuthSubmit = async (email: string, password: string) => {
+      if (!email || !password) {
+          setAuthError('Введите email и пароль');
+          return;
+      }
+      try {
+          setDbError(null);
+          await signInWithEmailAndPassword(auth, email.trim(), password);
+          setAuthError('');
+      } catch (error) {
+          setAuthError('Неверный email или пароль');
+      }
+  };
+
+  const handleLogout = async () => {
+      if (requireFirebaseAuth) {
+          await signOut(auth);
+          setDbError(null);
+          return;
+      }
       setIsAuthorized(false);
       try {
           localStorage.removeItem('playroom_staff_auth');
@@ -600,8 +1111,42 @@ const App: React.FC = () => {
       );
   }
 
+  if (!authReady) {
+      return (
+          <div className="h-screen flex flex-col items-center justify-center bg-gray-50 text-gray-500">
+              <Loader2 size={48} className="animate-spin mb-4 text-blue-600"/>
+              <p>Проверка авторизации...</p>
+          </div>
+      );
+  }
+
+  if (dbError) {
+      return (
+          <div className="min-h-screen flex items-center justify-center bg-red-50 p-4">
+              <div className="bg-white max-w-xl w-full rounded-2xl shadow-xl p-8 border border-red-100">
+                  <h1 className="text-xl font-bold text-red-700 mb-3">Ошибка доступа к Firestore</h1>
+                  <p className="text-gray-700 mb-2">Проверьте Firestore Rules и Firebase Authentication.</p>
+                  <p className="text-sm text-red-600 font-mono break-all">{dbError}</p>
+              </div>
+          </div>
+      );
+  }
+
   if (!isAuthorized) {
+      if (requireFirebaseAuth) {
+          return <FirebaseLoginScreen onSubmit={handleFirebaseAuthSubmit} error={authError} />;
+      }
       return <LoginScreen onSubmit={handleAuthSubmit} error={authError} />;
+  }
+
+  if (settingsMissing) {
+      return (
+          <SettingsRecoveryScreen
+              isRestoring={isRestoringSettings}
+              onInitializeDefaults={handleInitializeDefaultSettings}
+              onImportSettings={handleImportSettings}
+          />
+      );
   }
 
   const renderContent = () => {
@@ -618,11 +1163,18 @@ const App: React.FC = () => {
             discounts={discounts}
             extensionRate={extensionRate}
             clients={clients}
+            subscriptionPlans={subscriptionPlans}
             bonusPercentage={bonusPercentage}
             onAddSession={handleAddSession}
             onAddExtraItem={handleAddExtraItem}
             onExtendSession={handleExtendSession}
             onCloseSession={handleCloseSession}
+            onReverseSubscriptionUsage={(sessionId, reason) => {
+              if (!currentDayId) {
+                return Promise.reject(new Error('Нет открытой смены'));
+              }
+              return handleReverseSessionSubscriptionUsage(currentDayId, sessionId, reason);
+            }}
             onCheckClient={handleCheckAndAddClient}
           />
         );
@@ -650,6 +1202,7 @@ const App: React.FC = () => {
                 onCloseDay={handleCloseDay}
                 isShiftOpen={!!(currentDayId && days[currentDayId] && !days[currentDayId].isClosed)}
                 onOpenDay={handleOpenDay}
+                onSoftDeleteTransaction={handleSoftDeleteTransaction}
             />
         );
       case 'GOODS':
@@ -666,9 +1219,16 @@ const App: React.FC = () => {
         return (
             <ClientsTab
                 clients={clients}
+                subscriptionPlans={subscriptionPlans}
+                days={days}
+                isShiftOpen={!!(currentDayId && days[currentDayId] && !days[currentDayId].isClosed)}
                 onUpdateClients={handleUpdateClients}
                 onDeleteClient={handleDeleteClient}
                 onIssueCard={handleIssueBonusCard}
+                onAddBonusesManual={handleAddClientBonusesManual}
+                onSellSubscription={handleSellClientSubscription}
+                onAdjustSubscriptionMinutes={handleAdjustClientSubscriptionMinutes}
+                onReverseSubscriptionUsageByDay={handleReverseSessionSubscriptionUsage}
                 onAddFeedback={handleAddFeedback}
             />
         );
@@ -703,6 +1263,7 @@ const App: React.FC = () => {
                 partners={partners}
                 administrators={administrators}
                 bonusPercentage={bonusPercentage}
+                subscriptionPlans={subscriptionPlans}
                 documents={documents}
                 miniGameSettings={miniGameSettings}
                 feedbacks={feedbacks}
@@ -719,6 +1280,7 @@ const App: React.FC = () => {
                 onUpdatePartners={(v) => saveSettings('partners', v)}
                 onUpdateAdministrators={(v) => saveSettings('administrators', v)}
                 onUpdateBonusPercentage={(v) => saveSettings('bonusPercentage', v)}
+                onUpdateSubscriptionPlans={(v) => saveSettings('subscriptionPlans', v)}
                 onReopenShift={handleReopenShift}
                 onUpdateDocuments={(v) => saveSettings('documents', v)}
                 onUpdateMiniGames={(v) => saveSettings('miniGameSettings', v)}
@@ -726,6 +1288,10 @@ const App: React.FC = () => {
                 onAddTask={handleAddTask}
                 onDeleteTask={handleDeleteTask}
                 onUpdateStaffPassword={handleUpdateStaffPassword}
+                onExportSettings={handleExportSettings}
+                onExportClients={handleExportClients}
+                onExportFullBackup={handleExportFullBackup}
+                onImportSettings={handleImportSettings}
             />
         );
         case 'ANALYTICS':
@@ -833,6 +1399,107 @@ const LoginScreen: React.FC<{ onSubmit: (password: string) => void; error: strin
                     </button>
                 </form>
                 <p className="text-xs text-gray-400 mt-4 text-center">Пароль можно изменить в кабинете владельца</p>
+            </div>
+        </div>
+    );
+};
+
+const FirebaseLoginScreen: React.FC<{ onSubmit: (email: string, password: string) => void; error: string }> = ({ onSubmit, error }) => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        onSubmit(email, password);
+    };
+
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100 p-4">
+            <div className="bg-white max-w-md w-full rounded-2xl shadow-xl p-8 border border-blue-100">
+                <div className="text-center mb-6">
+                    <div className="text-2xl font-bold text-gray-900">PlayRoom CRM</div>
+                    <p className="text-sm text-gray-500 mt-2">Вход через Firebase Authentication</p>
+                </div>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                        <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-400 outline-none text-gray-900"
+                            placeholder="you@company.com"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Пароль</label>
+                        <input
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-400 outline-none text-gray-900"
+                            placeholder="Введите пароль"
+                        />
+                    </div>
+                    {error && <p className="text-sm text-red-600">{error}</p>}
+                    <button type="submit" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-md transition-colors">
+                        Войти
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+const SettingsRecoveryScreen: React.FC<{
+    isRestoring: boolean;
+    onInitializeDefaults: () => Promise<void>;
+    onImportSettings: (file: File) => Promise<void>;
+}> = ({ isRestoring, onInitializeDefaults, onImportSettings }) => {
+    const [importError, setImportError] = useState('');
+
+    const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        setImportError('');
+        try {
+            await onImportSettings(file);
+        } catch (error) {
+            setImportError('Не удалось импортировать файл. Проверьте JSON и попробуйте снова.');
+        }
+    };
+
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-red-50 p-4">
+            <div className="bg-white max-w-2xl w-full rounded-2xl shadow-xl p-8 border border-red-100">
+                <div className="flex items-center gap-3 mb-4 text-red-700">
+                    <AlertTriangle size={28} />
+                    <h1 className="text-xl font-bold">Отсутствует settings/config</h1>
+                </div>
+                <p className="text-gray-700 mb-6">
+                    Конфигурация CRM не найдена. Автоматический сброс отключен. Восстановите настройки из бэкапа или выполните явную инициализацию.
+                </p>
+                <div className="space-y-3">
+                    <label className="block">
+                        <span className="text-sm font-medium text-gray-700">Импорт JSON-бэкапа</span>
+                        <input
+                            type="file"
+                            accept="application/json,.json"
+                            onChange={handleImport}
+                            disabled={isRestoring}
+                            className="mt-2 block w-full text-sm text-gray-700 file:mr-4 file:rounded-lg file:border-0 file:bg-blue-600 file:px-4 file:py-2 file:font-semibold file:text-white hover:file:bg-blue-700"
+                        />
+                    </label>
+                    <button
+                        onClick={onInitializeDefaults}
+                        disabled={isRestoring}
+                        className="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg disabled:opacity-60"
+                    >
+                        Инициализировать дефолтные настройки
+                    </button>
+                    {importError && <p className="text-sm text-red-600">{importError}</p>}
+                    {isRestoring && <p className="text-sm text-gray-500">Восстановление данных...</p>}
+                </div>
             </div>
         </div>
     );

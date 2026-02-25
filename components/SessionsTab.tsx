@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Session, Tariff, Product, PaymentMethod, Discount, Client } from '../types';
-import { Plus, X, Play, Coffee, Zap, Phone, AlertTriangle, Search, User, CreditCard, Banknote, Gift } from 'lucide-react';
+import { Session, Tariff, Product, PaymentMethod, Discount, Client, ClientSubscription, SubscriptionPlan } from '../types';
+import { Plus, X, Play, Coffee, Zap, Phone, AlertTriangle, Search, User, CreditCard, Banknote, Gift, RotateCcw } from 'lucide-react';
 
 interface SessionsTabProps {
   sessions: Session[];
@@ -9,11 +9,13 @@ interface SessionsTabProps {
   discounts: Discount[];
   extensionRate: number;
   clients: Client[];
+  subscriptionPlans: SubscriptionPlan[];
   bonusPercentage: number;
   onAddSession: (sessionData: any) => void;
-  onAddExtraItem: (sessionId: string, product: Product) => void;
+  onAddExtraItem: (sessionId: string, product: Product, method: PaymentMethod) => void;
   onExtendSession: (sessionId: string, minutes: number, cost: number, method: PaymentMethod) => void;
   onCloseSession: (sessionId: string) => void;
+  onReverseSubscriptionUsage: (sessionId: string, reason: string) => Promise<void>;
   onCheckClient: (name: string, phone: string, childName: string, initialBonus: number) => void;
 }
 
@@ -29,11 +31,13 @@ const SessionsTab: React.FC<SessionsTabProps> = ({
   discounts,
   extensionRate,
   clients,
+  subscriptionPlans,
   bonusPercentage,
   onAddSession,
   onAddExtraItem,
   onExtendSession,
   onCloseSession,
+  onReverseSubscriptionUsage,
   onCheckClient
 }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -53,6 +57,7 @@ const SessionsTab: React.FC<SessionsTabProps> = ({
   const [foundClient, setFoundClient] = useState<Client | null>(null);
   const [useBonuses, setUseBonuses] = useState(false);
   const [bonusAmountToUse, setBonusAmountToUse] = useState<string>('');
+  const [useSubscriptionPayment, setUseSubscriptionPayment] = useState(false);
 
   // Tariff Selection Mode
   const [pricingMode, setPricingMode] = useState<'STANDARD' | 'CUSTOM'>('STANDARD');
@@ -120,6 +125,25 @@ const SessionsTab: React.FC<SessionsTabProps> = ({
       return parseFloat(customPrice) || 0;
   };
 
+  const getSubscriptionStatus = (sub: ClientSubscription) => {
+      if (sub.status === 'CANCELLED') return 'CANCELLED';
+      if ((sub.remainingMinutes || 0) <= 0) return 'USED_UP';
+      if (sub.expiresAt && sub.expiresAt < new Date().toISOString()) return 'EXPIRED';
+      return 'ACTIVE';
+  };
+
+  const activeSubscriptions = (foundClient?.subscriptions || [])
+      .map(sub => ({ ...sub, status: getSubscriptionStatus(sub) }))
+      .filter(sub => sub.status === 'ACTIVE' && (sub.remainingMinutes || 0) > 0)
+      .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));
+
+  const selectedTariff = tariffs.find(t => t.id === selectedTariffId);
+  const selectedTariffMinutes = pricingMode === 'STANDARD' ? (selectedTariff?.durationMinutes || 0) : 0;
+  const canUseSubscriptionForSelectedTariff = pricingMode === 'STANDARD' && selectedTariffMinutes > 0;
+  const eligibleSubscription = canUseSubscriptionForSelectedTariff
+      ? activeSubscriptions.find(sub => (sub.remainingMinutes || 0) >= selectedTariffMinutes)
+      : undefined;
+
   const calculateFinancials = () => {
       const basePrice = getBasePrice();
       let bonusesUsed = 0;
@@ -140,6 +164,12 @@ const SessionsTab: React.FC<SessionsTabProps> = ({
 
   const { basePrice, bonusesUsed, finalPrice, accrued } = calculateFinancials();
 
+  useEffect(() => {
+    if (!canUseSubscriptionForSelectedTariff || !eligibleSubscription) {
+      setUseSubscriptionPayment(false);
+    }
+  }, [canUseSubscriptionForSelectedTariff, eligibleSubscription?.id]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -159,6 +189,11 @@ const SessionsTab: React.FC<SessionsTabProps> = ({
         discountReason = discount?.name || 'Ручная скидка';
     }
 
+    if (useSubscriptionPayment && !eligibleSubscription) {
+      alert('Не удалось применить абонемент к выбранному тарифу.');
+      return;
+    }
+
     onAddSession({
       childName,
       parentName,
@@ -167,10 +202,15 @@ const SessionsTab: React.FC<SessionsTabProps> = ({
       tariffName,
       paymentMethod,
       duration,
-      price: basePrice, // Store original price
+      price: useSubscriptionPayment && eligibleSubscription ? 0 : basePrice, // no money transaction for subscription payment
       discountReason,
-      useBonuses: bonusesUsed,
-      accruedBonuses: accrued
+      useBonuses: useSubscriptionPayment ? 0 : bonusesUsed,
+      accruedBonuses: useSubscriptionPayment ? 0 : accrued,
+      subscriptionUsage: useSubscriptionPayment && eligibleSubscription ? {
+        subscriptionId: eligibleSubscription.id,
+        planName: eligibleSubscription.planName,
+        minutesUsed: duration
+      } : null
     });
 
     // Auto-create client
@@ -189,6 +229,7 @@ const SessionsTab: React.FC<SessionsTabProps> = ({
     setPricingMode('STANDARD');
     setUseBonuses(false);
     setBonusAmountToUse('');
+    setUseSubscriptionPayment(false);
   };
 
   return (
@@ -234,9 +275,10 @@ const SessionsTab: React.FC<SessionsTabProps> = ({
             session={session} 
             products={products}
             extensionRate={extensionRate}
-            onAddItem={(product) => onAddExtraItem(session.id, product)}
+            onAddItem={(product, method) => onAddExtraItem(session.id, product, method)}
             onExtend={(mins, cost, method) => onExtendSession(session.id, mins, cost, method)}
             onClose={() => onCloseSession(session.id)}
+            onReverseSubscriptionUsage={onReverseSubscriptionUsage}
             onWarning={() => addToast(`Внимание! У ${session.childName} заканчивается время (менее 5 мин)!`)}
           />
         ))}
@@ -411,18 +453,61 @@ const SessionsTab: React.FC<SessionsTabProps> = ({
 
               {/* Payment Section */}
               <div className="space-y-3">
+                  {foundClient && (
+                    <div className="border border-indigo-200 rounded-lg p-3 bg-indigo-50/50">
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <p className="text-xs font-bold text-indigo-700 uppercase">Абонементы</p>
+                                {activeSubscriptions.length > 0 ? (
+                                    <p className="text-sm text-gray-800">
+                                        Активных: <span className="font-bold">{activeSubscriptions.length}</span>
+                                        {eligibleSubscription && canUseSubscriptionForSelectedTariff ? (
+                                            <span className="block text-xs text-indigo-700 mt-1">
+                                                Подходит: {eligibleSubscription.planName} • {Math.floor((eligibleSubscription.remainingMinutes || 0) / 60)}ч {(eligibleSubscription.remainingMinutes || 0) % 60}м
+                                            </span>
+                                        ) : null}
+                                    </p>
+                                ) : (
+                                    <p className="text-sm text-gray-500">Нет активных абонементов</p>
+                                )}
+                            </div>
+                            <label className={`inline-flex items-center gap-2 text-sm font-bold ${eligibleSubscription && canUseSubscriptionForSelectedTariff ? 'text-indigo-700' : 'text-gray-400'}`}>
+                                <input
+                                    type="checkbox"
+                                    checked={useSubscriptionPayment}
+                                    disabled={!eligibleSubscription || !canUseSubscriptionForSelectedTariff}
+                                    onChange={(e) => {
+                                      setUseSubscriptionPayment(e.target.checked);
+                                      if (e.target.checked) {
+                                        setUseBonuses(false);
+                                        setBonusAmountToUse('');
+                                      }
+                                    }}
+                                />
+                                Оплатить абонементом
+                            </label>
+                        </div>
+                        {foundClient && activeSubscriptions.length > 0 && !canUseSubscriptionForSelectedTariff && (
+                            <p className="text-xs text-gray-500 mt-2">Абонементы доступны только для стандартных тарифов с фиксированным временем.</p>
+                        )}
+                        {canUseSubscriptionForSelectedTariff && activeSubscriptions.length > 0 && !eligibleSubscription && (
+                            <p className="text-xs text-red-600 mt-2">Недостаточно минут для выбранного тарифа ({selectedTariffMinutes} мин).</p>
+                        )}
+                    </div>
+                  )}
+
                   <div className="flex gap-4">
                       <label className="flex-1 cursor-pointer">
-                           <input type="radio" name="pay" checked={paymentMethod === PaymentMethod.CASH} onChange={() => setPaymentMethod(PaymentMethod.CASH)} className="hidden peer"/>
+                           <input type="radio" name="pay" checked={paymentMethod === PaymentMethod.CASH} onChange={() => setPaymentMethod(PaymentMethod.CASH)} className="hidden peer" disabled={useSubscriptionPayment}/>
                            <div className="w-full border p-2 rounded-lg text-center peer-checked:bg-green-100 peer-checked:border-green-400 peer-checked:text-green-800 font-bold transition-colors flex items-center justify-center gap-2"><Banknote size={16}/> Наличные</div>
                       </label>
                       <label className="flex-1 cursor-pointer">
-                           <input type="radio" name="pay" checked={paymentMethod === PaymentMethod.CARD} onChange={() => setPaymentMethod(PaymentMethod.CARD)} className="hidden peer"/>
+                           <input type="radio" name="pay" checked={paymentMethod === PaymentMethod.CARD} onChange={() => setPaymentMethod(PaymentMethod.CARD)} className="hidden peer" disabled={useSubscriptionPayment}/>
                            <div className="w-full border p-2 rounded-lg text-center peer-checked:bg-purple-100 peer-checked:border-purple-400 peer-checked:text-purple-800 font-bold transition-colors flex items-center justify-center gap-2"><CreditCard size={16}/> Карта</div>
                       </label>
                   </div>
 
-                  {foundClient && foundClient.bonusBalance && foundClient.bonusBalance > 0 && (
+                  {foundClient && foundClient.bonusBalance && foundClient.bonusBalance > 0 && !useSubscriptionPayment && (
                       <div className="border border-purple-200 rounded-lg p-3 bg-purple-50/50">
                           <label className="flex items-center gap-2 cursor-pointer mb-2">
                               <input 
@@ -453,12 +538,17 @@ const SessionsTab: React.FC<SessionsTabProps> = ({
               {/* Summary */}
               <div className="border-t pt-4 flex justify-between items-center">
                   <div className="text-xs text-gray-500">
-                      {bonusesUsed > 0 && <div>Списание: -{bonusesUsed} Б</div>}
-                      {accrued > 0 && <div className="text-green-600 font-bold flex items-center gap-1"><Gift size={10}/> Будет начислено: +{accrued} Б ({bonusPercentage}%)</div>}
+                      {!useSubscriptionPayment && bonusesUsed > 0 && <div>Списание: -{bonusesUsed} Б</div>}
+                      {!useSubscriptionPayment && accrued > 0 && <div className="text-green-600 font-bold flex items-center gap-1"><Gift size={10}/> Будет начислено: +{accrued} Б ({bonusPercentage}%)</div>}
                   </div>
                   <div className="text-right">
                       <div className="text-xs text-gray-400 uppercase">Итого к оплате</div>
-                      <div className="text-2xl font-bold text-gray-900">{finalPrice} ₽</div>
+                      <div className="text-2xl font-bold text-gray-900">{useSubscriptionPayment ? 0 : finalPrice} ₽</div>
+                      {useSubscriptionPayment && eligibleSubscription && (
+                        <div className="text-xs text-indigo-600 font-bold mt-1">
+                          Списание: {selectedTariffMinutes} мин ({eligibleSubscription.planName})
+                        </div>
+                      )}
                   </div>
               </div>
 
@@ -477,16 +567,19 @@ const SessionCard: React.FC<{
   session: Session;
   products: Product[];
   extensionRate: number;
-  onAddItem: (product: Product) => void;
+  onAddItem: (product: Product, method: PaymentMethod) => void;
   onExtend: (minutes: number, cost: number, method: PaymentMethod) => void;
   onClose: () => void;
+  onReverseSubscriptionUsage: (sessionId: string, reason: string) => Promise<void>;
   onWarning: () => void;
-}> = ({ session, products, extensionRate, onAddItem, onExtend, onClose, onWarning }) => {
+}> = ({ session, products, extensionRate, onAddItem, onExtend, onClose, onReverseSubscriptionUsage, onWarning }) => {
   const [timeLeft, setTimeLeft] = useState<string>('--:--');
   const [isWarning, setIsWarning] = useState(false);
   const [isOvertime, setIsOvertime] = useState(false);
   const [showGoodsMenu, setShowGoodsMenu] = useState(false);
   const [showExtendModal, setShowExtendModal] = useState(false);
+  const [goodsPaymentMethod, setGoodsPaymentMethod] = useState<PaymentMethod>(PaymentMethod.CASH);
+  const [isReversingSubscription, setIsReversingSubscription] = useState(false);
   
   // Refs to prevent multi-trigger
   const hasWarnedRef = useRef(false);
@@ -546,6 +639,30 @@ const SessionCard: React.FC<{
 
   const extraTotal = session.extraItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
+  const handleReverseSubscription = async () => {
+    if (!session.subscriptionUsage || session.subscriptionUsage.isReversed) return;
+    const reason = window.prompt('Причина возврата абонементных минут (обязательно):', '');
+    if (reason === null) return;
+    const normalizedReason = reason.trim();
+    if (!normalizedReason) {
+      alert('Укажите причину.');
+      return;
+    }
+    const confirmed = window.confirm(`Вернуть ${session.subscriptionUsage.minutesUsed} мин по абонементу для сессии "${session.childName}"?`);
+    if (!confirmed) return;
+
+    try {
+      setIsReversingSubscription(true);
+      await onReverseSubscriptionUsage(session.id, normalizedReason);
+      alert('Минуты по абонементу возвращены.');
+    } catch (error) {
+      console.error('Failed to reverse subscription usage', error);
+      alert('Не удалось вернуть минуты.');
+    } finally {
+      setIsReversingSubscription(false);
+    }
+  };
+
   return (
     <div className={`bg-white rounded-xl shadow-md border-2 relative overflow-visible flex flex-col transition-all duration-500 ${isOvertime ? 'border-red-500 ring-4 ring-red-200' : 'border-white'}`}>
       
@@ -578,6 +695,13 @@ const SessionCard: React.FC<{
             {session.tariffName}
             {session.discountReason && <span className="block text-xs text-green-600">{session.discountReason}</span>}
             {session.paidWithBonuses ? <span className="block text-xs text-purple-600">Бонусы: -{session.paidWithBonuses}</span> : null}
+            {session.subscriptionUsage ? (
+              <span className={`block text-xs ${session.subscriptionUsage.isReversed ? 'text-rose-600' : 'text-indigo-600'}`}>
+                {session.subscriptionUsage.isReversed
+                  ? `Списание абонемента отменено (${session.subscriptionUsage.minutesUsed} мин)`
+                  : `Абонемент: ${session.subscriptionUsage.planName} (${session.subscriptionUsage.minutesUsed} мин)`}
+              </span>
+            ) : null}
           </span>
         </div>
 
@@ -630,11 +754,27 @@ const SessionCard: React.FC<{
                             <span className="font-bold text-xs text-gray-500 uppercase">Добавить товар</span>
                             <button onClick={() => setShowGoodsMenu(false)} className="text-gray-500 hover:text-gray-700"><X size={14}/></button>
                         </div>
+                        <div className="flex gap-1 mb-2">
+                            <button
+                                type="button"
+                                onClick={() => setGoodsPaymentMethod(PaymentMethod.CASH)}
+                                className={`flex-1 text-xs py-1.5 rounded border font-medium ${goodsPaymentMethod === PaymentMethod.CASH ? 'bg-green-100 text-green-800 border-green-300' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}
+                            >
+                                Нал
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setGoodsPaymentMethod(PaymentMethod.CARD)}
+                                className={`flex-1 text-xs py-1.5 rounded border font-medium ${goodsPaymentMethod === PaymentMethod.CARD ? 'bg-purple-100 text-purple-800 border-purple-300' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}
+                            >
+                                Карта
+                            </button>
+                        </div>
                         <div className="max-h-48 overflow-y-auto space-y-1">
                             {products.map(p => (
                                 <button 
                                     key={p.id}
-                                    onClick={() => { onAddItem(p); setShowGoodsMenu(false); }}
+                                    onClick={() => { onAddItem(p, goodsPaymentMethod); setShowGoodsMenu(false); }}
                                     className="w-full text-left p-2 hover:bg-blue-50 rounded flex justify-between items-center text-sm text-gray-900"
                                 >
                                     <span>{p.name}</span>
@@ -654,6 +794,18 @@ const SessionCard: React.FC<{
         >
           Завершить
         </button>
+
+        {session.subscriptionUsage && !session.subscriptionUsage.isReversed && (
+          <button
+            type="button"
+            onClick={handleReverseSubscription}
+            disabled={isReversingSubscription}
+            className="w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold py-2 px-4 rounded-lg text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            <RotateCcw size={14} />
+            {isReversingSubscription ? 'Возврат минут...' : 'Вернуть минуты абонемента'}
+          </button>
+        )}
       </div>
 
       {/* Extend Modal */}

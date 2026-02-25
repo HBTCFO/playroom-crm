@@ -1,6 +1,6 @@
 
 import React, { useState, useRef } from 'react';
-import { Tariff, Product, Discount, CalendarEvent, BirthdayRateSettings, StaffAnimator, Category, Partner, Administrator, DayData, ImportantDocument, MiniGameSettings, DocumentType, Feedback, AdminTask } from '../types';
+import { Tariff, Product, Discount, CalendarEvent, BirthdayRateSettings, StaffAnimator, Category, Partner, Administrator, DayData, ImportantDocument, MiniGameSettings, DocumentType, Feedback, AdminTask, SubscriptionPlan } from '../types';
 import { OWNER_PASSWORD } from '../constants';
 import { Lock, Trash2, Plus, Save, Clock, PartyPopper, Coffee, Tag, Briefcase, Handshake, CheckCircle, XCircle, Users, History, RotateCcw, FileText, Percent, FileCheck, Sparkles, CalendarDays, Upload, FileType, Link as LinkIcon, MessageSquare, Lightbulb, MessageSquareWarning, Check, ClipboardList, Clock3 } from 'lucide-react';
 
@@ -17,6 +17,7 @@ interface OwnerTabProps {
   partners: Partner[];
   administrators: Administrator[];
   bonusPercentage: number;
+  subscriptionPlans: SubscriptionPlan[];
   documents: ImportantDocument[];
   miniGameSettings: MiniGameSettings;
   feedbacks: Feedback[];
@@ -33,6 +34,7 @@ interface OwnerTabProps {
   onUpdatePartners: (partners: Partner[]) => void;
   onUpdateAdministrators: (admins: Administrator[]) => void;
   onUpdateBonusPercentage: (percentage: number) => void;
+  onUpdateSubscriptionPlans: (plans: SubscriptionPlan[]) => void;
   onReopenShift: (date: string) => void;
   onUpdateDocuments: (docs: ImportantDocument[]) => void;
   onUpdateMiniGames: (settings: MiniGameSettings) => void;
@@ -40,11 +42,15 @@ interface OwnerTabProps {
   onAddTask: (desc: string) => void;
   onDeleteTask: (id: string) => void;
   onUpdateStaffPassword: (password: string) => Promise<void>;
+  onExportSettings: () => void;
+  onExportClients: () => void;
+  onExportFullBackup: () => void;
+  onImportSettings: (file: File) => Promise<void>;
 }
 
 const OwnerTab: React.FC<OwnerTabProps> = ({ 
-    events, days, tariffs, products, categories, discounts, extensionRate, birthdayRates, staffAnimators, partners, administrators, bonusPercentage, documents, miniGameSettings, feedbacks, adminTasks, staffPassword,
-    onUpdateTariffs, onUpdateProducts, onUpdateCategories, onUpdateDiscounts, onUpdateExtensionRate, onUpdateEvents, onUpdateBirthdayRates, onUpdateStaffAnimators, onUpdatePartners, onUpdateAdministrators, onUpdateBonusPercentage, onReopenShift, onUpdateDocuments, onUpdateMiniGames, onResolveFeedback, onAddTask, onDeleteTask, onUpdateStaffPassword
+    events, days, tariffs, products, categories, discounts, extensionRate, birthdayRates, staffAnimators, partners, administrators, bonusPercentage, subscriptionPlans, documents, miniGameSettings, feedbacks, adminTasks, staffPassword,
+    onUpdateTariffs, onUpdateProducts, onUpdateCategories, onUpdateDiscounts, onUpdateExtensionRate, onUpdateEvents, onUpdateBirthdayRates, onUpdateStaffAnimators, onUpdatePartners, onUpdateAdministrators, onUpdateBonusPercentage, onUpdateSubscriptionPlans, onReopenShift, onUpdateDocuments, onUpdateMiniGames, onResolveFeedback, onAddTask, onDeleteTask, onUpdateStaffPassword, onExportSettings, onExportClients, onExportFullBackup, onImportSettings
 }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
@@ -61,6 +67,7 @@ const OwnerTab: React.FC<OwnerTabProps> = ({
   const [localPartners, setLocalPartners] = useState<Partner[]>(partners);
   const [localAdministrators, setLocalAdministrators] = useState<Administrator[]>(administrators);
   const [localBonusPercentage, setLocalBonusPercentage] = useState<number>(bonusPercentage);
+  const [localSubscriptionPlans, setLocalSubscriptionPlans] = useState<SubscriptionPlan[]>(subscriptionPlans);
   const [localMiniGames, setLocalMiniGames] = useState<MiniGameSettings>(miniGameSettings);
 
   // New Category Management State
@@ -79,6 +86,10 @@ const OwnerTab: React.FC<OwnerTabProps> = ({
 
   // New Admin Form State
   const [newAdminName, setNewAdminName] = useState('');
+  const [newSubscriptionName, setNewSubscriptionName] = useState('');
+  const [newSubscriptionHours, setNewSubscriptionHours] = useState('');
+  const [newSubscriptionPrice, setNewSubscriptionPrice] = useState('');
+  const [newSubscriptionValidityDays, setNewSubscriptionValidityDays] = useState('30');
 
   // New Task Form State
   const [newTaskDesc, setNewTaskDesc] = useState('');
@@ -95,9 +106,14 @@ const OwnerTab: React.FC<OwnerTabProps> = ({
   const [newStaffPassword, setNewStaffPassword] = useState('');
   const [confirmStaffPassword, setConfirmStaffPassword] = useState('');
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
+  const [backupMessage, setBackupMessage] = useState<string | null>(null);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!OWNER_PASSWORD) {
+      setError('VITE_OWNER_PASSWORD не настроен');
+      return;
+    }
     if (passwordInput === OWNER_PASSWORD) {
       setIsAuthenticated(true);
       setError('');
@@ -235,6 +251,45 @@ const OwnerTab: React.FC<OwnerTabProps> = ({
       alert('Общие настройки сохранены!');
   };
 
+  const addSubscriptionPlan = () => {
+      const name = newSubscriptionName.trim();
+      const hours = Number(newSubscriptionHours);
+      const price = Number(newSubscriptionPrice);
+      const validityDays = Number(newSubscriptionValidityDays);
+      if (!name || !Number.isFinite(hours) || hours <= 0 || !Number.isFinite(price) || price < 0 || !Number.isFinite(validityDays) || validityDays < 1) {
+          alert('Заполните название, часы, цену и срок действия.');
+          return;
+      }
+      const newPlan: SubscriptionPlan = {
+          id: `subplan_${Date.now()}`,
+          name,
+          totalMinutes: Math.round(hours * 60),
+          price: Math.round(price),
+          validityDays: Math.round(validityDays),
+          isActive: true,
+          description: null
+      };
+      setLocalSubscriptionPlans(prev => [...prev, newPlan]);
+      setNewSubscriptionName('');
+      setNewSubscriptionHours('');
+      setNewSubscriptionPrice('');
+      setNewSubscriptionValidityDays('30');
+  };
+
+  const updateSubscriptionPlan = (id: string, patch: Partial<SubscriptionPlan>) => {
+      setLocalSubscriptionPlans(prev => prev.map(plan => plan.id === id ? { ...plan, ...patch } : plan));
+  };
+
+  const removeSubscriptionPlan = (id: string) => {
+      if (!window.confirm('Удалить шаблон абонемента? Уже проданные абонементы клиентов не удалятся.')) return;
+      setLocalSubscriptionPlans(prev => prev.filter(plan => plan.id !== id));
+  };
+
+  const saveSubscriptionPlans = () => {
+      onUpdateSubscriptionPlans(localSubscriptionPlans);
+      alert('Шаблоны абонементов сохранены!');
+  };
+
   // --- Task Logic ---
   const handleCreateTask = () => {
       if(newTaskDesc.trim()) {
@@ -332,6 +387,33 @@ const OwnerTab: React.FC<OwnerTabProps> = ({
       } catch (error) {
           setPasswordMessage('Не удалось обновить пароль. Попробуйте ещё раз.');
       }
+  };
+
+  const handleSettingsImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+          await onImportSettings(file);
+          setBackupMessage('Настройки успешно импортированы');
+      } catch (error) {
+          setBackupMessage('Ошибка импорта. Проверьте JSON-файл');
+      }
+      e.target.value = '';
+  };
+
+  const handleSettingsExport = () => {
+      onExportSettings();
+      setBackupMessage('Файл настроек выгружен');
+  };
+
+  const handleClientsExport = () => {
+      onExportClients();
+      setBackupMessage('Файл клиентской базы выгружен (телефоны, бонусы и т.д.)');
+  };
+
+  const handleFullBackupExport = () => {
+      onExportFullBackup();
+      setBackupMessage('Полный бэкап (settings + clients) выгружен');
   };
   
   const handleGameActivityChange = (weekType: 'ODD' | 'EVEN', gameIndex: number, val: string) => {
@@ -454,7 +536,31 @@ const OwnerTab: React.FC<OwnerTabProps> = ({
               </div>
           </div>
       </section>
-      
+
+      <section className="bg-white rounded-xl shadow-sm border border-indigo-100 overflow-hidden">
+          <div className="p-6 bg-indigo-50 border-b border-indigo-100 flex justify-between items-center">
+              <h2 className="text-lg font-bold text-indigo-900 flex items-center gap-2">
+                  <FileText size={20} /> Резервная копия настроек
+              </h2>
+          </div>
+          <div className="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+              <button onClick={handleSettingsExport} className="bg-indigo-600 text-white px-4 py-2 rounded font-bold hover:bg-indigo-700">
+                  Экспорт settings/config
+              </button>
+              <button onClick={handleClientsExport} className="bg-cyan-600 text-white px-4 py-2 rounded font-bold hover:bg-cyan-700">
+                  Экспорт клиентов
+              </button>
+              <button onClick={handleFullBackupExport} className="bg-emerald-600 text-white px-4 py-2 rounded font-bold hover:bg-emerald-700">
+                  Полный бэкап
+              </button>
+              <label className="bg-white border border-indigo-300 text-indigo-700 px-4 py-2 rounded font-bold text-center cursor-pointer hover:bg-indigo-50">
+                  Импорт settings JSON
+                  <input type="file" accept="application/json,.json" className="hidden" onChange={handleSettingsImport} />
+              </label>
+              {backupMessage && <p className="md:col-span-2 xl:col-span-4 text-sm text-gray-600">{backupMessage}</p>}
+          </div>
+      </section>
+
       {/* Staff Access Password */}
       <section className="bg-white rounded-xl shadow-sm border border-purple-100 overflow-hidden">
           <div className="p-6 bg-purple-50 border-b border-purple-100 flex justify-between items-center">
@@ -547,6 +653,109 @@ const OwnerTab: React.FC<OwnerTabProps> = ({
       </section>
 
       {/* 0. General Settings & Admin Management */}
+      <section className="bg-white rounded-xl shadow-sm border border-indigo-100 overflow-hidden">
+          <div className="p-6 bg-indigo-50 border-b border-indigo-100 flex justify-between items-center">
+              <h2 className="text-lg font-bold text-indigo-900 flex items-center gap-2">
+                  <Clock size={20} /> Абонементы (шаблоны)
+              </h2>
+              <button onClick={saveSubscriptionPlans} className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 flex items-center gap-2">
+                  <Save size={16}/> Сохранить
+              </button>
+          </div>
+          <div className="p-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <input
+                      value={newSubscriptionName}
+                      onChange={e => setNewSubscriptionName(e.target.value)}
+                      className="border border-gray-300 rounded-lg p-2 bg-white text-gray-900"
+                      placeholder="Название (например, 10 часов)"
+                  />
+                  <input
+                      type="number"
+                      min="1"
+                      step="0.5"
+                      value={newSubscriptionHours}
+                      onChange={e => setNewSubscriptionHours(e.target.value)}
+                      className="border border-gray-300 rounded-lg p-2 bg-white text-gray-900"
+                      placeholder="Часы"
+                  />
+                  <input
+                      type="number"
+                      min="0"
+                      value={newSubscriptionPrice}
+                      onChange={e => setNewSubscriptionPrice(e.target.value)}
+                      className="border border-gray-300 rounded-lg p-2 bg-white text-gray-900"
+                      placeholder="Цена"
+                  />
+                  <div className="flex gap-2">
+                      <input
+                          type="number"
+                          min="1"
+                          value={newSubscriptionValidityDays}
+                          onChange={e => setNewSubscriptionValidityDays(e.target.value)}
+                          className="flex-1 border border-gray-300 rounded-lg p-2 bg-white text-gray-900"
+                          placeholder="Срок (дн.)"
+                      />
+                      <button onClick={addSubscriptionPlan} type="button" className="bg-indigo-600 text-white px-3 rounded-lg hover:bg-indigo-700">
+                          <Plus size={18}/>
+                      </button>
+                  </div>
+              </div>
+
+              <div className="space-y-2">
+                  {localSubscriptionPlans.map(plan => (
+                      <div key={plan.id} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center border border-indigo-100 rounded-lg p-3 bg-indigo-50/30">
+                          <input
+                              value={plan.name}
+                              onChange={e => updateSubscriptionPlan(plan.id, { name: e.target.value })}
+                              className="md:col-span-4 border border-gray-300 rounded p-2 bg-white text-gray-900"
+                          />
+                          <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={Math.round((plan.totalMinutes || 0) / 60)}
+                              onChange={e => updateSubscriptionPlan(plan.id, { totalMinutes: Math.max(1, Math.round(Number(e.target.value) || 1)) * 60 })}
+                              className="md:col-span-2 border border-gray-300 rounded p-2 bg-white text-gray-900"
+                              title="Часы"
+                          />
+                          <input
+                              type="number"
+                              min="0"
+                              value={plan.price}
+                              onChange={e => updateSubscriptionPlan(plan.id, { price: Math.max(0, Math.round(Number(e.target.value) || 0)) })}
+                              className="md:col-span-2 border border-gray-300 rounded p-2 bg-white text-gray-900"
+                              title="Цена"
+                          />
+                          <input
+                              type="number"
+                              min="1"
+                              value={plan.validityDays}
+                              onChange={e => updateSubscriptionPlan(plan.id, { validityDays: Math.max(1, Math.round(Number(e.target.value) || 1)) })}
+                              className="md:col-span-2 border border-gray-300 rounded p-2 bg-white text-gray-900"
+                              title="Срок действия (дни)"
+                          />
+                          <div className="md:col-span-2 flex items-center justify-end gap-2">
+                              <button
+                                  type="button"
+                                  onClick={() => updateSubscriptionPlan(plan.id, { isActive: !plan.isActive })}
+                                  className={`px-2 py-1 rounded text-xs font-bold ${plan.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}
+                              >
+                                  {plan.isActive ? 'Активен' : 'Выключен'}
+                              </button>
+                              <button type="button" onClick={() => removeSubscriptionPlan(plan.id)} className="text-red-500 hover:text-red-700 p-1">
+                                  <Trash2 size={16}/>
+                              </button>
+                          </div>
+                      </div>
+                  ))}
+                  {localSubscriptionPlans.length === 0 && (
+                      <p className="text-sm text-gray-400 italic">Шаблоны абонементов еще не добавлены.</p>
+                  )}
+              </div>
+          </div>
+      </section>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* General Settings (Bonus) */}
           <section className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">

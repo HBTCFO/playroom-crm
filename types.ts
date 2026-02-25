@@ -53,6 +53,33 @@ export interface Client {
   bonusCardNumber?: string | null;
   bonusBalance?: number | null;
   isAddedToContacts?: boolean | null;
+  subscriptions?: ClientSubscription[] | null;
+}
+
+export interface SubscriptionPlan {
+  id: string;
+  name: string;
+  totalMinutes: number;
+  price: number;
+  validityDays: number;
+  isActive: boolean;
+  description?: string | null;
+}
+
+export type ClientSubscriptionStatus = 'ACTIVE' | 'USED_UP' | 'EXPIRED' | 'CANCELLED';
+
+export interface ClientSubscription {
+  id: string;
+  planId: string;
+  planName: string;
+  totalMinutes: number;
+  remainingMinutes: number;
+  purchasedAt: string;
+  expiresAt: string;
+  status: ClientSubscriptionStatus;
+  pricePaid: number;
+  paymentMethod: PaymentMethod;
+  notes?: string | null;
 }
 
 export interface Product {
@@ -92,6 +119,14 @@ export interface Session {
   discountReason?: string | null;
   paidWithBonuses?: number | null;
   accruedBonuses?: number | null;
+  subscriptionUsage?: {
+    subscriptionId: string;
+    planName: string;
+    minutesUsed: number;
+    isReversed?: boolean;
+    reversedAt?: string | null;
+    reversalReason?: string | null;
+  } | null;
 }
 
 export interface Transaction {
@@ -103,6 +138,10 @@ export interface Transaction {
   description: string;
   relatedSessionId?: string | null;
   relatedEventId?: string | null;
+  isDeleted?: boolean;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+  deletionReason?: string | null;
 }
 
 export interface CleaningRecord {
