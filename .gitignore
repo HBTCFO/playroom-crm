@@ -28,3 +28,4 @@ playroom_github_token.txt
 *.env
 *.backup.json
 *Бэкап*
+.vercel

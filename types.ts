@@ -186,6 +186,8 @@ export interface ScheduleShift {
   date: string; // YYYY-MM-DD
   adminId: string;
   adminName: string;
+  startTime?: string | null; // HH:mm
+  endTime?: string | null; // HH:mm
 }
 
 export type DocumentType = 'GOOGLE' | 'WORD' | 'PDF' | 'OTHER';

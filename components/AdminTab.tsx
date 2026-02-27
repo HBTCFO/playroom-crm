@@ -25,6 +25,9 @@ const AdminTab: React.FC<AdminTabProps> = ({
   const [calendarDate, setCalendarDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [showAddShiftModal, setShowAddShiftModal] = useState(false);
+  const [newShiftAdminId, setNewShiftAdminId] = useState('');
+  const [newShiftStartTime, setNewShiftStartTime] = useState('10:00');
+  const [newShiftEndTime, setNewShiftEndTime] = useState('22:00');
 
   // Task Completion Modal State
   const [completingTask, setCompletingTask] = useState<AdminTask | null>(null);
@@ -51,29 +54,71 @@ const AdminTab: React.FC<AdminTabProps> = ({
 
   const handleDayClick = (dateStr: string) => {
       setSelectedDate(dateStr);
+      const firstActiveAdmin = administrators.find(a => a.isActive);
+      setNewShiftAdminId(firstActiveAdmin?.id || '');
+      setNewShiftStartTime('10:00');
+      setNewShiftEndTime('22:00');
       setShowAddShiftModal(true);
   };
 
-  const handleAddShift = (adminId: string) => {
-      if (!selectedDate) return;
-      const admin = administrators.find(a => a.id === adminId);
-      if (!admin) return;
+  const getShiftsForDate = (date: string) => {
+      return schedule
+        .filter(s => s.date === date)
+        .slice()
+        .sort((a, b) => {
+            const aStart = a.startTime || '99:99';
+            const bStart = b.startTime || '99:99';
+            if (aStart !== bStart) return aStart.localeCompare(bStart);
+            return a.adminName.localeCompare(b.adminName, 'ru');
+        });
+  };
 
-      // Remove existing shift
-      const newSchedule = schedule.filter(s => s.date !== selectedDate);
-      
-      newSchedule.push({
+  const formatShiftTime = (shift: ScheduleShift) => {
+      if (!shift.startTime && !shift.endTime) return 'Без времени';
+      if (!shift.startTime) return `до ${shift.endTime}`;
+      if (!shift.endTime) return `с ${shift.startTime}`;
+      return `${shift.startTime}–${shift.endTime}`;
+  };
+
+  const handleAddShift = () => {
+      if (!selectedDate) return;
+      const admin = administrators.find(a => a.id === newShiftAdminId);
+      if (!admin) return;
+      if (!newShiftStartTime || !newShiftEndTime) {
+          alert('Укажите время начала и окончания смены.');
+          return;
+      }
+      if (newShiftStartTime >= newShiftEndTime) {
+          alert('Время окончания должно быть позже времени начала.');
+          return;
+      }
+
+      const dayShifts = getShiftsForDate(selectedDate);
+      const hasDuplicate = dayShifts.some(s => 
+          s.adminId === admin.id && (s.startTime || '') === newShiftStartTime && (s.endTime || '') === newShiftEndTime
+      );
+      if (hasDuplicate) {
+          alert('Такая смена уже добавлена на этот день.');
+          return;
+      }
+
+      const newSchedule = [...schedule, {
           id: Date.now().toString(),
           date: selectedDate,
           adminId: admin.id,
-          adminName: admin.name
-      });
+          adminName: admin.name,
+          startTime: newShiftStartTime,
+          endTime: newShiftEndTime
+      }];
 
       onUpdateSchedule(newSchedule);
-      setShowAddShiftModal(false);
   };
 
-  const handleRemoveShift = (date: string) => {
+  const handleRemoveShift = (shiftId: string) => {
+      onUpdateSchedule(schedule.filter(s => s.id !== shiftId));
+  };
+
+  const handleRemoveAllShifts = (date: string) => {
       onUpdateSchedule(schedule.filter(s => s.date !== date));
       setShowAddShiftModal(false);
   };
@@ -360,22 +405,32 @@ const AdminTab: React.FC<AdminTabProps> = ({
                                const d = i + 1;
                                const localDate = new Date(calendarDate.getFullYear(), calendarDate.getMonth(), d);
                                const dateStr = localDate.toLocaleDateString('en-CA');
-                               const shift = schedule.find(s => s.date === dateStr);
+                               const dayShifts = getShiftsForDate(dateStr);
                                const isToday = dateStr === new Date().toISOString().slice(0,10);
 
                                return (
                                    <div 
                                        key={d}
                                        onClick={() => handleDayClick(dateStr)}
-                                       className={`min-h-[80px] rounded-xl border transition-all cursor-pointer relative p-2 flex flex-col items-start justify-between hover:shadow-md ${shift ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100 hover:border-blue-200'} ${isToday ? 'ring-2 ring-blue-500' : ''}`}
+                                       className={`min-h-[92px] rounded-xl border transition-all cursor-pointer relative p-2 flex flex-col items-start justify-between hover:shadow-md ${dayShifts.length > 0 ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100 hover:border-blue-200'} ${isToday ? 'ring-2 ring-blue-500' : ''}`}
                                    >
                                        <span className={`text-sm font-bold ${isToday ? 'text-blue-600' : 'text-gray-700'}`}>{d}</span>
-                                       {shift && (
-                                           <div className="mt-1 bg-white/80 backdrop-blur-sm px-2 py-1 rounded text-xs font-bold text-blue-800 w-full truncate shadow-sm">
-                                               {shift.adminName}
+                                       {dayShifts.length > 0 && (
+                                           <div className="mt-1 w-full space-y-1">
+                                               {dayShifts.slice(0, 2).map(shift => (
+                                                   <div key={shift.id} className="bg-white/90 backdrop-blur-sm px-2 py-1 rounded text-[10px] shadow-sm border border-blue-100 w-full">
+                                                       <div className="font-bold text-blue-800 truncate">{shift.adminName}</div>
+                                                       <div className="text-blue-500 truncate">{formatShiftTime(shift)}</div>
+                                                   </div>
+                                               ))}
+                                               {dayShifts.length > 2 && (
+                                                   <div className="text-[10px] font-bold text-blue-600 px-1">
+                                                       +{dayShifts.length - 2} еще
+                                                   </div>
+                                               )}
                                            </div>
                                        )}
-                                       {!shift && (
+                                       {dayShifts.length === 0 && (
                                            <div className="mt-auto self-center opacity-0 hover:opacity-100 text-blue-300">
                                                <PlusCircle size={20}/>
                                            </div>
@@ -392,30 +447,95 @@ const AdminTab: React.FC<AdminTabProps> = ({
        {/* Add Shift Modal */}
        {showAddShiftModal && selectedDate && (
            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-               <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-in zoom-in-95 duration-200">
+               <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 animate-in zoom-in-95 duration-200">
                    <h3 className="text-lg font-bold text-gray-900 mb-4">Смена: {new Date(selectedDate).toLocaleDateString()}</h3>
-                   <div className="space-y-3">
-                       {administrators.filter(a => a.isActive).map(admin => (
-                           <button 
-                               key={admin.id}
-                               onClick={() => handleAddShift(admin.id)}
-                               className={`w-full p-3 rounded-lg border text-left flex items-center gap-3 transition-colors ${schedule.find(s => s.date === selectedDate)?.adminId === admin.id ? 'bg-blue-100 border-blue-300 text-blue-800 ring-1 ring-blue-400' : 'bg-white border-gray-200 hover:bg-gray-50 text-gray-700'}`}
-                           >
-                               <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 font-bold">
-                                   {admin.name.charAt(0)}
+                   <div className="space-y-4">
+                       <div className="bg-gray-50 rounded-xl border border-gray-100 p-3">
+                           <div className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-2">
+                               <Clock size={14}/> Назначенные смены
+                           </div>
+                           <div className="space-y-2 max-h-56 overflow-y-auto">
+                               {getShiftsForDate(selectedDate).length === 0 && (
+                                   <div className="text-sm text-gray-400 italic text-center py-3">На этот день смены не назначены</div>
+                               )}
+                               {getShiftsForDate(selectedDate).map(shift => (
+                                   <div key={shift.id} className="flex items-center gap-2 p-2 rounded-lg bg-white border border-gray-200">
+                                       <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm shrink-0">
+                                           {shift.adminName.charAt(0)}
+                                       </div>
+                                       <div className="min-w-0 flex-1">
+                                           <div className="font-bold text-sm text-gray-800 truncate">{shift.adminName}</div>
+                                           <div className="text-xs text-gray-500">{formatShiftTime(shift)}</div>
+                                       </div>
+                                       <button
+                                           type="button"
+                                           onClick={() => handleRemoveShift(shift.id)}
+                                           className="p-2 rounded-lg text-red-500 hover:bg-red-50"
+                                           title="Удалить смену"
+                                       >
+                                           <Trash2 size={16}/>
+                                       </button>
+                                   </div>
+                               ))}
+                           </div>
+                       </div>
+
+                       <div className="border border-blue-100 bg-blue-50/50 rounded-xl p-3 space-y-3">
+                           <div className="text-xs font-bold text-blue-600 uppercase">Добавить смену</div>
+                           <div>
+                               <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Администратор</label>
+                               <select
+                                   value={newShiftAdminId}
+                                   onChange={(e) => setNewShiftAdminId(e.target.value)}
+                                   className="w-full p-2.5 rounded-lg border border-gray-200 bg-white text-gray-900"
+                               >
+                                   <option value="">Выберите администратора</option>
+                                   {administrators.filter(a => a.isActive).map(admin => (
+                                       <option key={admin.id} value={admin.id}>{admin.name}</option>
+                                   ))}
+                               </select>
+                           </div>
+                           <div className="grid grid-cols-2 gap-3">
+                               <div>
+                                   <label className="block text-xs font-bold text-gray-500 uppercase mb-1">С</label>
+                                   <input
+                                       type="time"
+                                       value={newShiftStartTime}
+                                       onChange={(e) => setNewShiftStartTime(e.target.value)}
+                                       className="w-full p-2.5 rounded-lg border border-gray-200 bg-white text-gray-900"
+                                   />
                                </div>
-                               <span className="font-bold">{admin.name}</span>
-                               {schedule.find(s => s.date === selectedDate)?.adminId === admin.id && <CheckCircle className="ml-auto" size={18}/>}
-                           </button>
-                       ))}
-                       
-                       {schedule.find(s => s.date === selectedDate) && (
+                               <div>
+                                   <label className="block text-xs font-bold text-gray-500 uppercase mb-1">До</label>
+                                   <input
+                                       type="time"
+                                       value={newShiftEndTime}
+                                       onChange={(e) => setNewShiftEndTime(e.target.value)}
+                                       className="w-full p-2.5 rounded-lg border border-gray-200 bg-white text-gray-900"
+                                   />
+                               </div>
+                           </div>
                            <button 
-                               onClick={() => handleRemoveShift(selectedDate)}
-                               className="w-full p-3 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 font-bold flex items-center justify-center gap-2 mt-4"
+                               type="button"
+                               onClick={handleAddShift}
+                               className="w-full p-3 rounded-lg border border-blue-200 bg-blue-600 text-white hover:bg-blue-700 font-bold flex items-center justify-center gap-2"
                            >
-                               <Trash2 size={18}/> Убрать смену
+                               <PlusCircle size={18}/> Добавить смену
                            </button>
+                       </div>
+
+                       {getShiftsForDate(selectedDate).length > 0 && (
+                           <button 
+                               onClick={() => handleRemoveAllShifts(selectedDate)}
+                               className="w-full p-3 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 font-bold flex items-center justify-center gap-2"
+                           >
+                               <Trash2 size={18}/> Очистить день
+                           </button>
+                       )}
+                       {administrators.filter(a => a.isActive).length === 0 && (
+                           <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg p-3">
+                               Нет активных администраторов для назначения.
+                           </p>
                        )}
                    </div>
                    <button onClick={() => setShowAddShiftModal(false)} className="w-full mt-4 py-2 text-gray-500 font-medium hover:text-gray-700">Отмена</button>
